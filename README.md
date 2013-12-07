@@ -8,7 +8,7 @@ leiningen -- see (http://leiningen.org/)
 
 clojure -- see (http://clojure.org/)
 
-Vowpal Wabit -- see (https://github.com/JohnLangford/vowpal_wabbit/wiki/Tutorial)
+Vowpal Wabbit -- see (https://github.com/JohnLangford/vowpal_wabbit/wiki/Tutorial)
 
 ElasticSearch -- see (http://www.elasticsearch.org/download/)
 
