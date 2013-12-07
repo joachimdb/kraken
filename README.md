@@ -6,7 +6,8 @@ Playing around with
 - clojure.core.async (https://github.com/clojure/core.async) 
 - elastic search ((http://www.elasticsearch.org/ and https://github.com/clojurewerkz/elastisch)
 - Vowpal Wabbit (https://github.com/JohnLangford/vowpal_wabbit/)
-- clojurescript (https://github.com/clojure/clojurescript) and d3js (http://d3js.org/).
+- clojurescript (https://github.com/clojure/clojurescript) 
+- d3js (http://d3js.org/).
 
 Inspired by http://euphonious-intuition.com/2013/04/not-just-for-search-using-elasticsearch-with-machine-learning-algorithms/ and https://github.com/magomimmo/modern-cljs
 
