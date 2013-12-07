@@ -12,13 +12,10 @@ Inspired by http://euphonious-intuition.com/2013/04/not-just-for-search-using-el
 
 ## Prerequisites
 
-leiningen -- see (http://leiningen.org/)
-
-clojure -- see (http://clojure.org/)
-
-Vowpal Wabbit -- see (https://github.com/JohnLangford/vowpal_wabbit/wiki/Tutorial)
-
-ElasticSearch -- see (http://www.elasticsearch.org/Download/)
+- leiningen -- see (http://leiningen.org/)
+- clojure -- see (http://clojure.org/)
+- Vowpal Wabbit -- see (https://github.com/JohnLangford/vowpal_wabbit/wiki/Tutorial)
+- ElasticSearch -- see (http://www.elasticsearch.org/Download/)
 
 ## Usage
 
