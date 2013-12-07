@@ -15,7 +15,7 @@ ElasticSearch -- see (http://www.elasticsearch.org/download/)
 
 ## Usage
 
-TODO
+Not really intended for use by others (but if you're intereested let me know)
 
 ## License
 
