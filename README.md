@@ -1,6 +1,7 @@
 # kraken
 
-A Clojure library designed to ... well, that part is up to you.
+Playing around with kraken api (https://www.kraken.com/help/api). 
+Inspired by http://euphonious-intuition.com/2013/04/not-just-for-search-using-elasticsearch-with-machine-learning-algorithms/
 
 ## Prerequisites
 
