@@ -15,7 +15,7 @@ ElasticSearch -- see (http://www.elasticsearch.org/download/)
 
 ## Usage
 
-Not really intended for use by others (but if you're interexsted let me know)
+Not really intended for use by others (but if you're interested let me know)
 
 ## License
 
