@@ -14,11 +14,7 @@
 ;;; See file kraken.examples.channels.clj for examples
 
 ;;; TODO: 
-;;; make file and elastic sinks.
-;;; Then connect ticker source to elastic sink
-;;; Then do the same for spreads and trades
-;;; Then save to github
-;;; Then use data in elastic to determine optimal trailing percentages for buying in and out by generating huge amount of features and doing online learning (see http://euphonious-intuition.com/2013/04/not-just-for-search-using-elasticsearch-with-machine-learning-algorithms/)
+;;; use data in elastic to determine optimal trailing percentages for buying in and out by generating huge amount of features and doing online learning (see http://euphonious-intuition.com/2013/04/not-just-for-search-using-elasticsearch-with-machine-learning-algorithms/)
 
 ;;    "You can also use stop orders to open long or short positions. If XBT/USD price is trending up,
 ;; and you think a 6% fall will signal a reversal to a downtrend that you want to short, you could
@@ -37,17 +33,17 @@
 (def +pairs+ ["LTCEUR" "NMCEUR" "BTCEUR"])
 
 (def es-tick-connection 
-  (connect! (ch/tick-source (apply str (butlast (interleave +pairs+ (repeat ",")))) poll-interval)
+  (connect! (ch/tick-source (apply str (interpose "," +pairs+)) poll-interval false) 
             (ch/tick-indexer (es/local-connection))))
 
 (def es-spread-connection
   (doseq [pair +pairs+]
-    (connect! (ch/spread-source pair poll-interval)
+    (connect! (ch/spread-source pair poll-interval false)
               (ch/spread-indexer (es/local-connection)))))
 
 (def es-trade-connection 
   (doseq [pair +pairs+]
-    (connect! (ch/trade-source pair poll-interval)
+    (connect! (ch/trade-source pair poll-interval false)
               (ch/trade-indexer (es/local-connection)))))
 
 
@@ -75,7 +71,7 @@
 (comment 
   
   
-  [(get-in (es/ticks :search_type "count") [:hits :total])
+  [(get-in (es/ticks (es/local-connection) :search_type "count") [:hits :total]) ;; 3537
    (get-in (es/trades :search_type "count") [:hits :total])
    (get-in (es/spreads :search_type "count") [:hits :total])]
 

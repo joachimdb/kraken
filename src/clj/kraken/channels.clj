@@ -42,7 +42,7 @@
   "Creates and returns a channel that outputs true every msecs milliseconds."
   ([msecs] (pulse nil msecs))
   ([n msecs]
-     (repeatedly-channel n msecs (repeatedly true))
+     (repeatedly-channel n msecs (repeatedly true) true)
      (let [out (as/chan)]
        (as/go-loop [i 0]
                    (if (or (nil? n) (> n i))
@@ -59,10 +59,12 @@ poll returns nil or throws an exception."
   ([poll-fn msecs n-or-buf]
      (let [i (atom 0)
            prev (atom nil)]
-       (repeatedly-channel msecs (fn []
-                                   (reset! prev (poll-fn @i @prev))
-                                   (swap! i inc)
-                                   @prev)))))
+       (repeatedly-channel msecs 
+                           (fn []
+                             (reset! prev (poll-fn @i @prev))
+                             (swap! i inc)
+                             @prev)))))
+
 
 (def +continue+ (atom true))
 
@@ -77,19 +79,22 @@ poll returns nil or throws an exception."
 (defn spread-channel 
   ([pair poll-interval] 
      (assert @+continue+)
-     (spread-channel pair poll-interval (fn [] @+continue+) nil 0))
-  ([pair poll-interval continue? last last-processed]
+     (spread-channel pair poll-interval nil (fn [] @+continue+) nil 0))
+  ([pair poll-interval on-fail] 
+     (assert @+continue+)
+     (spread-channel pair poll-interval on-fail (fn [] @+continue+) nil 0))
+  ([pair poll-interval on-fail continue? last last-processed]
      (let [ch (as/chan)
            last (atom last)
            last-processed (atom last-processed)
            get-spread (fn []
                         (try (pub/spread pair :since @last)
-                             (catch Exception e nil)))]
+                             (catch Exception e on-fail)))]
        (as/go-loop []
            (let [next (get-spread)]
              (if (and (continue?) (not (nil? next)))
                (do (when (> (count next) @last-processed)
-                     (as/onto-chan ch (drop @last-processed next) false))
+                       (as/onto-chan ch (drop @last-processed next) false))
                    (reset! last (:last (meta next)))
                    (reset! last-processed (count (filter #(= (* 1000 @last) (tcoerce/to-long (:time %))) next)))
                    (as/<! (as/timeout poll-interval))
@@ -318,27 +323,37 @@ when any of the input channels closes."
 (defn tick-source 
   ([pair msecs] 
      (assert @+continue+)
-     (tick-source pair msecs (fn [] @+continue+)))
-  ([pair msecs continue?]
+     (tick-source pair msecs nil (fn [] @+continue+)))
+  ([pair msecs on-fail] 
+     (assert @+continue+)
+     (tick-source pair msecs on-fail (fn [] @+continue+)))
+  ([pair msecs on-fail continue?]
      (blocking-mult (as/mapcat< identity ;; pub/ticker returns a sequence of ticks 
-                                (polling-channel (fn [_ _] (when (continue?) (pub/ticker pair))) msecs)))))
+                                (polling-channel (fn [_ _] (when (continue?) (try (pub/ticker pair) (catch Exception e on-fail))))
+                                                 msecs)))))
 
 (defn spread-source
-  ([pair poll-interval] 
+  ([pair msecs] 
      (assert @+continue+)
-     (spread-source pair poll-interval (fn [] @+continue+) nil 0))
-  ([pair poll-interval continue?] 
-     (spread-source pair poll-interval continue? nil 0))
-  ([pair poll-interval continue? last last-processed]
-     (blocking-mult (spread-channel pair poll-interval continue? last last-processed))))
+     (spread-source pair msecs nil (fn [] @+continue+) nil 0))
+  ([pair msecs on-fail] 
+     (assert @+continue+)
+     (spread-source pair msecs on-fail (fn [] @+continue+) nil 0))
+  ([pair msecs on-fail continue?] 
+     (spread-source pair msecs on-fail continue? nil 0))
+  ([pair msecs on-fail continue? last last-processed]
+     (blocking-mult (spread-channel pair msecs on-fail continue? last last-processed))))
 
 (defn trade-source 
   ([pair msecs] 
      (assert @+continue+)
-     (trade-source pair msecs (fn [] @+continue+)))
-  ([pair msecs continue?]
+     (trade-source pair msecs nil (fn [] @+continue+)))
+  ([pair msecs on-fail] 
+     (assert @+continue+)
+     (trade-source pair msecs on-fail (fn [] @+continue+)))
+  ([pair msecs on-fail continue?]
      (blocking-mult (as/mapcat< identity ;; pub/tradeer returns a sequence of trades 
-                                (polling-channel (fn [_ prev] (when (continue?) (pub/trades pair :since (:last (meta prev))))) msecs)))))
+                                (polling-channel (fn [_ prev] (when (continue?) (try (pub/trades pair :since (:last (meta prev))) (catch Exception e on-fail)))) msecs)))))
 
 ;;; IV. Sinks (Mixers) and Accumulators
 ;;; ===================================
@@ -372,17 +387,17 @@ options as spit."
 (defn tick-indexer
   "A sink accepting ticks and storing them to elastic"
   [es-connection]
-  (sink (fn [tick] (es/index-tick es-connection tick))))
+  (sink (fn [tick] (when tick (es/index-tick es-connection tick)))))
 
 (defn spread-indexer
   "A sink accepting spreads and storing them to elastic"
   [es-connection]
-  (sink (fn [spread] (es/index-spread es-connection spread))))
+  (sink (fn [spread] (when spread (es/index-spread es-connection spread)))))
 
 (defn trade-indexer
   "A sink accepting trades and storing them to elastic"
   [es-connection]
-  (sink (fn [trade] (es/index-trade es-connection trade))))
+  (sink (fn [trade] (when trade (es/index-trade es-connection trade)))))
 
 (defn accumulator
   "Consumes a channel and returns an atom that will be filled with the sequence of values sent
