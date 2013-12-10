@@ -15,7 +15,7 @@
                  [org.clojure/clojurescript "0.0-2069"]
                  [clojurewerkz/elastisch "1.1.1"]]
   :ring {:handler kraken.core/handler}
-  :source-paths ["src/clj" "src/cljs"]
+  :source-paths ["src/clj/kraken" "src/clj" "src/cljs"]
   :plugins [[lein-cljsbuild "1.0.0"]
             [lein-ring "0.8.8"]]
   :profiles {:dev {:dependencies [[ring-serve "0.1.2"]

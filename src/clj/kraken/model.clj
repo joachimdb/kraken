@@ -46,7 +46,6 @@
 (defn mk-tick [time asset ask-price ask-volume bid-price bid-volume last-price last-volume volume24 trades24 low24 high24 opening]
   (Tick. time asset ask-price ask-volume bid-price bid-volume last-price last-volume volume24 trades24 low24 high24 opening))
 
-
 (defrecord Trade [^java.lang.Double price 
                   ^java.lang.Double volume
                   ^org.joda.time.DateTime time

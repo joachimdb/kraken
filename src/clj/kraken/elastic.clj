@@ -8,6 +8,8 @@
             [clj-time.coerce :as tcoerce]
             [clojure.core.async :as as]))
 
+;;; I. General helper functions (connect/create/delete/scroll idx ..._)
+
 (defmacro with-connection [[con] & body]
   `(binding [esr/*endpoint* ~con]
      ~@body))
@@ -32,69 +34,132 @@
          (when (esi/exists? idx)
            (esi/delete idx)))))) 
 
+(defn lazy-scroll [scroll-id scroll]
+  (let [response (esd/scroll scroll-id :scroll scroll)]
+    (if (> (count (:hits (:hits response))) 0)
+      (lazy-cat (map (fn [hit] (with-meta (or (:_source hit) (:_fields hit)) 
+                                 (dissoc hit :_source :_fields)))
+                     (:hits (:hits response)))
+                (lazy-scroll (:_scroll_id response) scroll))
+      '())))
+
+(defn result-seq [es-connection idx mapping
+               & {:keys [query filter size scroll fields]
+                  :or {query {:match_all {}}
+                       scroll "1m"
+                       size 2000}
+                  :as opts}]
+  (with-connection [es-connection]
+    (let [initial-response (apply esd/search idx mapping 
+                                  (mapcat identity (assoc opts
+                                                     :query query
+                                                     :scroll scroll
+                                                     :search_type "scan"
+                                                     :size size)))]
+      (with-meta (lazy-scroll (:_scroll_id initial-response) scroll)
+        (merge (dissoc initial-response :hits)
+               (dissoc (:hits initial-response) :hits))))))
+
+(defn results [es-connection idx mapping
+               & {:keys [query filter size facets search_type sort fields]
+                  :or {query {:match_all {}}
+                       search_type "query_then_fetch"}
+                  :as opts}]
+  (with-connection [es-connection]
+    (let [esr (apply esd/search idx mapping 
+                     (mapcat identity (merge opts {:query query :search_type search_type })))]
+      (with-meta (map (fn [hit] (with-meta (or (:_source hit) (:_fields hit))
+                                  (dissoc hit :_source :_fields)))
+                      (:hits (:hits esr)))
+        (merge (dissoc esr :hits)
+               (dissoc (:hits esr) :hits))))))
+
 (defn index-tick [es-connection tick]
   (with-connection [es-connection]
     (esd/create :tick :tick 
                 (update-in tick [:time] tcoerce/to-date))))
 
+(defn result->tick [result]
+  (let [result (update-in result [:time] tformat/parse)]
+    (with-meta (apply mk-tick (map #(get result %) [:time :asset :ask-price :ask-volume :bid-price :bid-volume :last-price :last-volume :volume24 :trades24 :low24 :high24 :opening]))
+      (meta result))))
+
 (defn ticks [es-connection
-             & {:keys [query filter size facets search_type sort]
+             & {:keys [query filter size facets search_type sort fields]
                 :or {query {:match_all {}}
                      search-type "query_then_fetch"
                      ;; sort [{:time {:order "desc"}}]
                      }
                 :as opts}]
-  (with-connection [es-connection]
-    (apply esd/search :tick :tick 
-           (mapcat identity (merge {:query {:match_all {}} 
-                                    :search_type "query_then_fetch"}
-                                   opts)))))
+  (let [results (apply results es-connection :tick :tick (mapcat identity opts))]
+    (with-meta (map result->tick results)
+      (meta results))))
+
+(defn all-ticks [es-connection 
+                 & {:keys [query filter size fields]
+                    :or {query {:match_all {}}}
+                    :as opts}]
+  (let [results (apply result-seq es-connection :tick :tick (mapcat identity (merge opts {:query query})))]
+    (with-meta (map result->tick results)
+      (meta results))))
 
 (defn index-spread [es-connection spread]
   (with-connection [es-connection]
     (esd/create :spread :spread 
                 (update-in spread [:time] tcoerce/to-date))))
 
+(defn result->spread [result]
+  (let [result (update-in result [:time] tformat/parse)]
+    (with-meta (apply mk-spread (map #(get result %) [:bid :ask :time :asset]))
+      (meta result))))
+
 (defn spreads [es-connection
-               & {:keys [query filter size facets search_type sort]
+               & {:keys [query filter size facets search_type sort fields]
                   :or {query {:match_all {}}
                        search-type "query_then_fetch"
                        ;; sort [{:time {:order "desc"}}]
                        }
                   :as opts}]
-  (with-connection [es-connection]
-    (apply esd/search :spread :spread 
-           (mapcat identity (merge {:query {:match_all {}} 
-                                    :search_type "query_then_fetch"}
-                                   opts)))))
+  (let [results (apply results es-connection :spread :spread (mapcat identity opts))]
+    (with-meta (map result->spread results)
+      (meta results))))
+
+(defn all-spreads [es-connection 
+                   & {:keys [query filter size fields]
+                      :or {query {:match_all {}}}
+                      :as opts}]
+  (let [results (apply result-seq es-connection :spread :spread (mapcat identity (merge opts {:query query})))]
+    (with-meta (map result->spread results)
+      (meta results))))
+
 
 (defn index-trade [es-connection trade]
   (with-connection [es-connection]
     (esd/create :trade :trade 
                 (update-in trade [:time] tcoerce/to-date))))
-(defn trades [& {:keys [query filter size facets search_type sort]
-                 :or {query {:match_all {}}
-                      search_type "query_then_fetch"
-                      ;; sort [{:time {:order "desc"}}]
-                      }
-                 :as opts}]
-  (apply esd/search :trade :trade 
-         (mapcat identity (merge {:query {:match_all {}} 
-                                  :search_type "query_then_fetch"}
-                                 opts))))
+
+(defn result->trade [result]
+  (let [result (update-in result [:time] tformat/parse)]
+    (with-meta (apply mk-trade (map #(get result %) [:price :volume :time :bid-type :order-type :misc :asset]))
+      (meta result))))
 
 (defn trades [es-connection 
-              & {:keys [query filter size facets search_type sort]
-                  :or {query {:match_all {}}
-                       search-type "query_then_fetch"
-                       sort [{:time {:order "desc"}}]}
-                  :as opts}]
-  (with-connection 
-    (apply esd/search :trade :trade 
-           (mapcat identity (merge {:query {:match_all {}} 
-                                    :search_type "query_then_fetch"
-                                    :sort [{:time {:order "desc"}}] }
-                                   opts)))))
+              & {:keys [query filter size facets search_type sort fields]
+                 :or {query {:match_all {}}
+                      search-type "query_then_fetch"}
+                 :as opts}]
+  (let [results (apply results es-connection :trade :trade (mapcat identity opts))]
+    (with-meta (map result->trade results)
+      (meta results))))
+
+(defn all-trades [es-connection 
+                  & {:keys [query filter size fields]
+                     :or {query {:match_all {}}}
+                     :as opts}]
+  (let [results (apply result-seq es-connection :trade :trade (mapcat identity (merge opts {:query query})))]
+    (with-meta (map result->trade results)
+      (meta results))))
+
 ;; (def spread (first (kraken.api.public/spread "LTCEUR")))
 
 ;; (with-connection [(local-connection)]
@@ -200,4 +265,27 @@
                                            from-date)
                      :lte (tformat/unparse (tformat/formatters :date-hour-minute-second)
                                            to-date)}}}))
+
+
+;;; Cleansing
+
+
+(defn compute-duplicates [es-connection idx mapping]
+  "Returns a sequence of all entries in idx/mapping that are identical to another entry content
+wise. If there are N identical entries, then only N-1 entries are returned (so that it is safe to
+simply delete all entries returned)."
+  (let [all-results (result-seq es-connection idx mapping)
+        grps (group-by identity all-results)]
+    (mapcat rest (vals grps))))
+
+(defn delete-duplicates [es-connection idx mapping]
+  "See compute-dunplicates.
+
+   TODO: use bulk api."
+  (let [all-results (result-seq es-connection idx mapping)
+        grps (group-by identity all-results)]
+    (with-connection [es-connection]    
+      (doseq [duplicates (vals grps)]
+        (doseq [doc (rest duplicates)]
+          (esd/delete idx mapping (:_id doc)))))))
 

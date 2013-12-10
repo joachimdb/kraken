@@ -8,6 +8,7 @@
             [compojure.route :as route]
             [kraken.elastic :as es]
             [kraken.channels :as ch]
+            [kraken.api.public :as pub]
             [clojure.core.async :as as]))
 
 
@@ -27,19 +28,32 @@
 ;; (es/delete-indices (es/local-connection))
 (es/create-indices (es/local-connection))
 (reset! ch/+continue+ true)
-(def poll-interval 30000)
+(def poll-interval 5000)
 ;; (reset! ch/+continue+ false)
 
-(def +pairs+ ["LTCEUR" "NMCEUR" "BTCEUR"])
+(def +pairs+ ["XLTCZEUR" "XNMCZEUR" "XXBTZEUR"])
 
 (def es-tick-connection 
-  (connect! (ch/tick-source (apply str (interpose "," +pairs+)) poll-interval false) 
+  (connect! (ch/tick-source (apply str (interpose "," +pairs+)) poll-interval false)
             (ch/tick-indexer (es/local-connection))))
 
+(defn compute-last-spread-settings [es-connection pair]
+  (let [new-spreads (pub/spread pair)
+        indexed-spreads (into #{} (es/all-spreads es-connection
+                                                  :query (es/match-query :asset pair)
+                                                  :filter (es/daterange-filter :time (:time (first new-spreads)))))]
+    ;; TODO: Use bulk api
+    (doseq [s (clojure.set/intersection (into #{} new-spreads) indexed-spreads)]
+      (es/index-spread es-connection s))
+    {:last (:last (meta new-spreads))
+     :last-processed (count (filter #(= (* 1000 (:last (meta new-spreads))) (tcoerce/to-long (:time %))) new-spreads))}))
+
 (def es-spread-connection
-  (doseq [pair +pairs+]
-    (connect! (ch/spread-source pair poll-interval false)
-              (ch/spread-indexer (es/local-connection)))))
+  (let [es-connection (es/local-connection)]
+    (doseq [pair +pairs+]
+      (let [last-settings (compute-last-spread-settings es-connection pair)]
+        (connect! (ch/spread-source pair poll-interval false (:last last-settings) (:last-processed last-settings))
+                  (ch/spread-indexer es-connection))))))
 
 (def es-trade-connection 
   (doseq [pair +pairs+]

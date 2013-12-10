@@ -22,13 +22,13 @@
 
 (defn repeatedly-channel 
   "Creates and returns a channel that is filled with repeated calls to f. Closes when f returns nil or throws an exception."
-  ([f] (repeatedly-channel nil nil f))
-  ([msecs f] (repeatedly-channel nil msecs f))
-  ([n msecs f]
+  ([f on-fail] (repeatedly-channel nil nil f on-fail))
+  ([msecs f on-fail] (repeatedly-channel nil msecs f on-fail))
+  ([n msecs f on-fail]
      (let [out (as/chan 1)]
        (as/go-loop [i 0]
             (if (or (nil? n) (> n i))
-              (let [v (try (f) (catch Exception e nil))]
+              (let [v (try (f) (catch Exception e on-fail))]
                 (if (nil? v)
                   (as/close! out)
                   (do (as/put! out v)
@@ -42,7 +42,7 @@
   "Creates and returns a channel that outputs true every msecs milliseconds."
   ([msecs] (pulse nil msecs))
   ([n msecs]
-     (repeatedly-channel n msecs (repeatedly true) true)
+     (repeatedly-channel n msecs (repeatedly true) nil)
      (let [out (as/chan)]
        (as/go-loop [i 0]
                    (if (or (nil? n) (> n i))
@@ -55,35 +55,37 @@
 (defn polling-channel
   "Creates and returns a channel and puts the result of polls onto it. The channel is closed when a
 poll returns nil or throws an exception."
-  ([poll-fn msecs] (polling-channel poll-fn msecs nil))
-  ([poll-fn msecs n-or-buf]
+  ([poll-fn msecs on-fail] (polling-channel poll-fn msecs on-fail nil))
+  ([poll-fn msecs on-fail n-or-buf]
      (let [i (atom 0)
            prev (atom nil)]
        (repeatedly-channel msecs 
                            (fn []
+                             (println "poll-chan fn")
                              (reset! prev (poll-fn @i @prev))
                              (swap! i inc)
-                             @prev)))))
+                             (println @prev)
+                             @prev)
+                           on-fail))))
 
 
 (def +continue+ (atom true))
 
 (defn tick-channel 
-  ([pair poll-interval] 
+  ([pair msecs on-fail] 
      (assert @+continue+)
-     (tick-channel pair poll-interval nil (fn [] @+continue+)))
-  ([pair poll-interval n-or-buf continue?]
+     (tick-channel pair msecs on-fail nil (fn [] @+continue+)))
+  ([pair msecs on-fail continue?]
      (as/mapcat< identity ;; pub/ticker returns a list of ticks
-                 (polling-channel (fn [_ _] (when (continue?) (pub/ticker pair))) poll-interval n-or-buf))))
+                 (polling-channel (fn [_ _] (when (continue?) (pub/ticker pair))) msecs [on-fail]))))
+
 
 (defn spread-channel 
-  ([pair poll-interval] 
-     (assert @+continue+)
-     (spread-channel pair poll-interval nil (fn [] @+continue+) nil 0))
   ([pair poll-interval on-fail] 
-     (assert @+continue+)
-     (spread-channel pair poll-interval on-fail (fn [] @+continue+) nil 0))
-  ([pair poll-interval on-fail continue? last last-processed]
+     (spread-channel pair poll-interval on-fail nil 0 (fn [] @+continue+)))
+  ([pair poll-interval on-fail last last-processed?]
+     (spread-channel pair poll-interval on-fail last last-processed? (fn [] @+continue+)))
+  ([pair poll-interval on-fail last last-processed continue?]
      (let [ch (as/chan)
            last (atom last)
            last-processed (atom last-processed)
@@ -91,25 +93,35 @@ poll returns nil or throws an exception."
                         (try (pub/spread pair :since @last)
                              (catch Exception e on-fail)))]
        (as/go-loop []
-           (let [next (get-spread)]
-             (if (and (continue?) (not (nil? next)))
-               (do (when (> (count next) @last-processed)
-                       (as/onto-chan ch (drop @last-processed next) false))
-                   (reset! last (:last (meta next)))
-                   (reset! last-processed (count (filter #(= (* 1000 @last) (tcoerce/to-long (:time %))) next)))
-                   (as/<! (as/timeout poll-interval))
-                   (recur))
-               (as/close! ch))))
+                   (let [next (get-spread)]
+                     (if (or (nil? next) (not (continue?))) 
+                       (as/close! ch)
+                       (do (if (= on-fail next)
+                             (as/put! ch on-fail)
+                             (do (when (> (count next) @last-processed)
+                                   (as/onto-chan ch (drop @last-processed next) false))
+                                 (reset! last (:last (meta next)))
+                                 (reset! last-processed (count (filter #(= (* 1000 @last) (tcoerce/to-long (:time %))) next)))))
+                           (as/<! (as/timeout poll-interval))
+                           (recur)))))
        ch)))
 
 (defn trade-channel 
-  ([pair poll-interval] 
+  ([pair msecs on-fail] 
      (assert @+continue+)
-     (trade-channel pair poll-interval (fn [] @+continue+)))
-  ([pair poll-interval continue?]
+     (trade-channel pair msecs on-fail (fn [] @+continue+)))
+  ([pair msecs on-fail last] 
+     (assert @+continue+)
+     (trade-channel pair msecs on-fail (fn [] @+continue+)))
+  ([pair msecs on-fail last continue?]
      (as/mapcat< identity ;; pub/trades returns a list of trades
-                 (polling-channel (fn [_ prev] (when (continue?) (pub/trades pair (:last (meta prev))))) poll-interval))))
-
+                 (polling-channel (fn [_ prev] 
+                                    (when (continue?) 
+                                      (let [new-last (if (nil? prev) last (:last (meta prev)))
+                                            ret (pub/trades pair new-last)]
+                                        ret)))
+                                  msecs
+                                  on-fail))))
 
 ;;; II. General channel transformations
 ;;; ===================================
@@ -303,9 +315,9 @@ when any of the input channels closes."
 
 (defn dynamic-source 
   "Creates and returns a source that is filled with repeated calls to f. Closes when f returns nil or throws an exception."
-  ([f] (dynamic-source nil nil f))
-  ([msecs f] (dynamic-source nil msecs f))
-  ([n msecs f] (blocking-mult (repeatedly-channel n msecs f))))
+  ([f on-fail] (dynamic-source nil nil f on-fail))
+  ([msecs f on-fail] (dynamic-source nil msecs f on-fail))
+  ([n msecs f on-fail] (blocking-mult (repeatedly-channel n msecs f on-fail))))
 
 (defn polling-source   
   "Creates and returns a mult and puts the result of polls onto tapping channels. In case there are
@@ -314,46 +326,43 @@ when any of the input channels closes."
 
   Poll-fn  must be a function of two arguments: the iteration index and the result value of the
   previous poll. The first time it is called values 0 and nil value are provided"
-  ([poll-fn msecs] (polling-source poll-fn msecs nil true))
-  ([poll-fn msecs n-or-buf blocking?]
+  ([poll-fn msecs on-fail] (polling-source poll-fn msecs on-fail nil true))
+  ([poll-fn msecs on-fail n-or-buf blocking?]
      (if blocking? 
-       (blocking-mult (polling-channel poll-fn msecs n-or-buf))
-       (dropping-mult (polling-channel poll-fn msecs n-or-buf)))))
+       (blocking-mult (polling-channel poll-fn msecs on-fail n-or-buf))
+       (dropping-mult (polling-channel poll-fn msecs on-fail n-or-buf)))))
 
 (defn tick-source 
-  ([pair msecs] 
-     (assert @+continue+)
-     (tick-source pair msecs nil (fn [] @+continue+)))
   ([pair msecs on-fail] 
      (assert @+continue+)
      (tick-source pair msecs on-fail (fn [] @+continue+)))
   ([pair msecs on-fail continue?]
-     (blocking-mult (as/mapcat< identity ;; pub/ticker returns a sequence of ticks 
-                                (polling-channel (fn [_ _] (when (continue?) (try (pub/ticker pair) (catch Exception e on-fail))))
-                                                 msecs)))))
+     (blocking-mult (tick-channel pair msecs on-fail continue?))))
 
 (defn spread-source
   ([pair msecs] 
      (assert @+continue+)
-     (spread-source pair msecs nil (fn [] @+continue+) nil 0))
+     (spread-source pair msecs nil nil 0 (fn [] @+continue+)))
   ([pair msecs on-fail] 
      (assert @+continue+)
-     (spread-source pair msecs on-fail (fn [] @+continue+) nil 0))
-  ([pair msecs on-fail continue?] 
-     (spread-source pair msecs on-fail continue? nil 0))
-  ([pair msecs on-fail continue? last last-processed]
-     (blocking-mult (spread-channel pair msecs on-fail continue? last last-processed))))
+     (spread-source pair msecs on-fail nil 0 (fn [] @+continue+)))
+  ([pair msecs on-fail last last-processed] 
+     (assert @+continue+)
+     (spread-source pair msecs on-fail last last-processed (fn [] @+continue+)))
+  ([pair msecs on-fail last last-processed continue?]
+     (blocking-mult (spread-channel pair msecs on-fail last last-processed continue?))))
 
 (defn trade-source 
-  ([pair msecs] 
-     (assert @+continue+)
-     (trade-source pair msecs nil (fn [] @+continue+)))
   ([pair msecs on-fail] 
      (assert @+continue+)
-     (trade-source pair msecs on-fail (fn [] @+continue+)))
-  ([pair msecs on-fail continue?]
-     (blocking-mult (as/mapcat< identity ;; pub/tradeer returns a sequence of trades 
-                                (polling-channel (fn [_ prev] (when (continue?) (try (pub/trades pair :since (:last (meta prev))) (catch Exception e on-fail)))) msecs)))))
+     (trade-source pair msecs on-fail nil (fn [] @+continue+)))
+  ([pair msecs on-fail last] 
+     (assert @+continue+)
+     (trade-source pair msecs on-fail last (fn [] @+continue+)))
+  ([pair msecs on-fail last continue?]
+     (blocking-mult (trade-channel pair msecs on-fail last continue?))))
+
+
 
 ;;; IV. Sinks (Mixers) and Accumulators
 ;;; ===================================
@@ -387,17 +396,26 @@ options as spit."
 (defn tick-indexer
   "A sink accepting ticks and storing them to elastic"
   [es-connection]
-  (sink (fn [tick] (when tick (es/index-tick es-connection tick)))))
+  (sink (fn [tick] 
+          (try (when (instance? kraken.model.Tick tick)
+                 (es/index-tick es-connection tick))
+               (catch Exception e nil))))) ;; TODO: properly work out elastic failure
 
 (defn spread-indexer
   "A sink accepting spreads and storing them to elastic"
   [es-connection]
-  (sink (fn [spread] (when spread (es/index-spread es-connection spread)))))
+  (sink (fn [spread] 
+          (try (when (instance? kraken.model.Spread spread)
+                 (es/index-spread es-connection spread))
+               (catch Exception e nil)))))
 
 (defn trade-indexer
   "A sink accepting trades and storing them to elastic"
   [es-connection]
-  (sink (fn [trade] (when trade (es/index-trade es-connection trade)))))
+  (sink (fn [trade]
+          (try (when (instance? kraken.model.Trade trade)
+                 (es/index-trade es-connection trade))
+               (catch Exception e nil)))))
 
 (defn accumulator
   "Consumes a channel and returns an atom that will be filled with the sequence of values sent
