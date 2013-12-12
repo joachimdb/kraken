@@ -4,7 +4,7 @@ Playing around with
 
 - kraken api (https://www.kraken.com/help/api) 
 - clojure.core.async (https://github.com/clojure/core.async) 
-- elastic search ((http://www.elasticsearch.org/ and https://github.com/clojurewerkz/elastisch)
+- elastic search (http://www.elasticsearch.org/ and https://github.com/clojurewerkz/elastisch)
 - vowpal wabbit (https://github.com/JohnLangford/vowpal_wabbit/)
 - clojurescript (https://github.com/clojure/clojurescript) 
 - d3js (http://d3js.org/).

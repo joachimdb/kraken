@@ -11,24 +11,12 @@
             [kraken.api.public :as pub]
             [clojure.core.async :as as]))
 
-
 ;;; See file kraken.examples.channels.clj for examples
-
-;;; TODO: 
-;;; use data in elastic to determine optimal trailing percentages for buying in and out by generating huge amount of features and doing online learning (see http://euphonious-intuition.com/2013/04/not-just-for-search-using-elasticsearch-with-machine-learning-algorithms/)
-
-;;    "You can also use stop orders to open long or short positions. If XBT/USD price is trending up,
-;; and you think a 6% fall will signal a reversal to a downtrend that you want to short, you could
-;; create a trailing stop sell order with a stop offset of 6% (with leverage since it will be a
-;; short position). This will open a short XBT/USD position once price falls 6%. In the reverse
-;; situation, where you want to open a long position once price rises by some amount after a
-;; downtrend, you could do this by creating a trailing stop buy order.""
-
 
 ;; (es/delete-indices (es/local-connection))
 (es/create-indices (es/local-connection))
 (reset! ch/+continue+ true)
-(def poll-interval 5000)
+(def poll-interval (* 1000 60 3)) ;; 3 minutes
 ;; (reset! ch/+continue+ false)
 
 (def +pairs+ ["XLTCZEUR" "XNMCZEUR" "XXBTZEUR"])
@@ -41,10 +29,13 @@
   (let [new-spreads (pub/spread pair)
         indexed-spreads (into #{} (es/all-spreads es-connection
                                                   :query (es/match-query :asset pair)
-                                                  :filter (es/daterange-filter :time (:time (first new-spreads)))))]
-    ;; TODO: Use bulk api
-    (doseq [s (clojure.set/intersection (into #{} new-spreads) indexed-spreads)]
-      (es/index-spread es-connection s))
+                                                  :filter (es/daterange-filter :time (:time (first new-spreads)))))
+        missing (clojure.set/difference (into #{} new-spreads) indexed-spreads)]
+    (when-not (empty? missing)
+      (println "indexing" (count missing) "spreads")
+      (apply es/index-spread es-connection missing))
+    ;; (doseq [s (clojure.set/difference (into #{} new-spreads) indexed-spreads)]
+    ;;   (es/index-spread es-connection s))
     {:last (:last (meta new-spreads))
      :last-processed (count (filter #(= (* 1000 (:last (meta new-spreads))) (tcoerce/to-long (:time %))) new-spreads))}))
 
@@ -55,10 +46,24 @@
         (connect! (ch/spread-source pair poll-interval false (:last last-settings) (:last-processed last-settings))
                   (ch/spread-indexer es-connection))))))
 
+(defn compute-last-trade-settings [es-connection pair]
+  (let [new-trades (pub/trades pair)
+        indexed-trades (into #{} (es/all-trades es-connection
+                                                :query (es/match-query :asset pair)
+                                                :filter (es/daterange-filter :time (:time (first new-trades)))))
+        missing (clojure.set/difference (into #{} new-trades) indexed-trades)]
+    (when-not (empty? missing)
+      (println "indexing" (count missing) "trades")
+      (apply es/index-trade es-connection missing))
+    {:last (:last (meta new-trades))}))
+
 (def es-trade-connection 
-  (doseq [pair +pairs+]
-    (connect! (ch/trade-source pair poll-interval false)
-              (ch/trade-indexer (es/local-connection)))))
+  (let [es-connection (es/local-connection)]
+    (doseq [pair +pairs+]
+      (let [last-settings (compute-last-trade-settings es-connection pair)]
+        (println "lts:" last-settings)
+        (connect! (ch/trade-source pair poll-interval false (:last last-settings))
+                  (ch/trade-indexer (es/local-connection)))))))
 
 
 ;; defroutes macro defines a function that chains individual route
@@ -85,14 +90,41 @@
 (comment 
   
   
-  [(get-in (es/ticks (es/local-connection) :search_type "count") [:hits :total]) ;; 3537
-   (get-in (es/trades :search_type "count") [:hits :total])
-   (get-in (es/spreads :search_type "count") [:hits :total])]
+  [(get-in (meta (es/ticks (es/local-connection) :search_type "count")) [:total]) 
+   (get-in (meta (es/trades (es/local-connection) :search_type "count")) [:total])
+   (get-in (meta (es/spreads (es/local-connection) :search_type "count")) [:total])]
+
+  [128962 13906 51974]
+
+
+
 
   (into {} (for [a ["XLTCZEUR" "XNMCZEUR" "XXBTZEUR"]]
              (vector a 
-                     (select-keys (:_source (first (:hits (:hits (es/ticks :query {:match {:asset a}}
-                                                                           :sort [{:time {:order "desc"}}] 
-                                                                           :size 1)))))
+                     (select-keys (first (es/ticks (es/local-connection)
+                                                   :query {:match {:asset a}}
+                                                   :sort [{:time {:order "desc"}}] 
+                                                   :size 1))
                                   [:last-price :time]))))
+
+  {"XLTCZEUR"
+   {:time #<DateTime 2013-12-12T09:08:51.000Z>, :last-price 22.77569},
+   "XNMCZEUR"
+   {:time #<DateTime 2013-12-12T09:08:51.000Z>, :last-price 4.685},
+   "XXBTZEUR"
+   {:time #<DateTime 2013-12-12T09:08:51.000Z>, :last-price 636.00004}}
+
+
+  (into {} (for [a ["XLTCZEUR" "XNMCZEUR" "XXBTZEUR"]]
+             (vector a 
+                     (select-keys (first (es/trades (es/local-connection)
+                                                   :query {:match {:asset a}}
+                                                   :sort [{:time {:order "desc"}}] 
+                                                   :size 1))
+                                  [:price :time]))))
+
+  {"XLTCZEUR" {:time #<DateTime 2013-12-12T07:13:40.000Z>, :price 22.77569},
+   "XNMCZEUR" {:time #<DateTime 2013-12-12T07:08:06.000Z>, :price 4.685},
+   "XXBTZEUR" {:time #<DateTime 2013-12-12T10:56:17.000Z>, :price 646.31984}}
+
   )

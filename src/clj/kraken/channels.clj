@@ -31,7 +31,8 @@
               (let [v (try (f) (catch Exception e on-fail))]
                 (if (nil? v)
                   (as/close! out)
-                  (do (as/put! out v)
+                  (do ;; (println "rep sending" v)
+                      (as/put! out v)
                       (when msecs 
                         (as/<! (as/timeout msecs)))
                       (recur (inc i)))))
@@ -61,10 +62,10 @@ poll returns nil or throws an exception."
            prev (atom nil)]
        (repeatedly-channel msecs 
                            (fn []
-                             (println "poll-chan fn")
+                             ;; (println "poll-chan fn")
                              (reset! prev (poll-fn @i @prev))
                              (swap! i inc)
-                             (println @prev)
+                             ;; (println @prev)
                              @prev)
                            on-fail))))
 
@@ -118,7 +119,8 @@ poll returns nil or throws an exception."
                  (polling-channel (fn [_ prev] 
                                     (when (continue?) 
                                       (let [new-last (if (nil? prev) last (:last (meta prev)))
-                                            ret (pub/trades pair new-last)]
+                                            ret (pub/trades pair :since new-last)]
+                                        ;; (println "sending" ret)
                                         ret)))
                                   msecs
                                   on-fail))))
@@ -413,6 +415,7 @@ options as spit."
   "A sink accepting trades and storing them to elastic"
   [es-connection]
   (sink (fn [trade]
+          ;; (println "got" trade)
           (try (when (instance? kraken.model.Trade trade)
                  (es/index-trade es-connection trade))
                (catch Exception e nil)))))
@@ -432,4 +435,8 @@ through it, newest values first. If size is given, only the last size elements a
        accumulated)))
 
 
-
+;; ;;; Monitoring
+;; (defn monitor-channel [ch]
+;;   (as/admix (print-sink) ch)) ;; problem: need to return the print-sink
+;; (defn monitor-source [ch]
+;;   (as/admix (print-sink) ch))

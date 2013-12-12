@@ -22,3 +22,7 @@ pom.xml.asc
 .lein-failures
 .lein-plugins
 .lein-repl-history
+/src/clj/kraken/#core.clj#
+/src/clj/kraken/.#core.clj
+/src/clj/kraken/api/#public.clj#
+/src/clj/kraken/api/.#public.clj
