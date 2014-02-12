@@ -3,48 +3,30 @@
             [clj-time.coerce :as tcoerce]
             [clojure.core.async :as as]))
 
-(def mappings {:tick
-               {:properties {:time {:type "date"}
-                             :asset {:type "string", :index "not_analyzed"}
-                             :ask-price {:type "double"}
-                             :ask-volume {:type "double"}
-                             :bid-price {:type "double"}
-                             :bid-volume {:type "double"}
-                             :last-price {:type "double"}
-                             :last-volume {:type "double"}
-                             :volume24 {:type "double"}
-                             :trades24 {:type "integer"}
-                             :low24 {:type "double"}
-                             :high24 {:type "double"}
-                             :opening {:type "double"}}}
-               :trade 
+(def currencies ["LTC" "BTC" "DOGE"])
+
+(defn primary-currency [^java.lang.String market-code]
+  (.substring market-code 0 (.indexOf market-code "/")))
+
+(defn secondary-currency [^java.lang.String market-code]
+  (.substring market-code (inc (.indexOf market-code "/"))))
+
+(def mappings {:trade 
                {:properties {:price {:type "double"}
                              :volume {:type "double"}
                              :time {:type "date"}
                              :bid-type {:type "string", :index "not_analyzed"}
                              :order-type {:type "string", :index "not_analyzed"}
-                             :misc {:type "string"}}}
-               :spread
-               {:properties {:bid {:type "double"}
-                             :ask {:type "double"}
-                             :time {:type "date"}}}})
-
-(defrecord Tick [^org.joda.time.DateTime time 
-                 ^java.lang.String asset
-                 ^java.lang.Double ask-price
-                 ^java.lang.Double ask-volume 
-                 ^java.lang.Double bid-price 
-                 ^java.lang.Double bid-volume 
-                 ^java.lang.Double last-price 
-                 ^java.lang.Double last-volume 
-                 ^java.lang.Double volume24 
-                 ^java.lang.Long trades24
-                 ^java.lang.Double low24
-                 ^java.lang.Double high24
-                 ^java.lang.Double opening])
-
-(defn mk-tick [time asset ask-price ask-volume bid-price bid-volume last-price last-volume volume24 trades24 low24 high24 opening]
-  (Tick. time asset ask-price ask-volume bid-price bid-volume last-price last-volume volume24 trades24 low24 high24 opening))
+                             :misc {:type "string"}
+                             :market {:type "string", :index "not_analyzed"}
+                             :exchange {:type "string", :index "not_analyzed"}}}
+               :order 
+               {:properties {:volume {:type "double"}
+                             :price {:type "double"}
+                             :bid-type {:type "string", :index "not_analyzed"}
+                             :order-type {:type "string", :index "not_analyzed"}
+                             :market {:type "string", :index "not_analyzed"}
+                             :exchange {:type "string", :index "not_analyzed"}}}})
 
 (defrecord Trade [^java.lang.Double price 
                   ^java.lang.Double volume
@@ -52,35 +34,55 @@
                   ^java.lang.String bid-type
                   ^java.lang.String order-type
                   ^java.lang.String misc
-                  ^java.lang.String asset])
+                  ^java.lang.String market
+                  ^java.lang.String exchange])
 
-(defn mk-trade [price volume time bid-type order-type misc asset]
-  (Trade. price volume time bid-type order-type misc asset))
+(defn mk-trade [price volume time bid-type order-type misc market exchange]
+  (Trade. price volume time bid-type order-type misc market exchange))
 
+(defrecord Order [^java.lang.Double price 
+                  ^java.lang.Double volume])
 
-(defrecord Spread [^java.lang.Double bid 
-                   ^java.lang.Double ask 
-                   ^org.joda.time.DateTime time
-                   ^java.lang.String asset])
+(defn mk-order [price volume]
+  (Order. price volume))
 
-(defn mk-spread [bid ask time asset]
-  (Spread. bid ask time asset))
+(defrecord OrderBook [^java.lang.String market-code
+                      ^java.lang.String exchange-code
+                      sell-orders
+                      buy-orders])
 
-(defprotocol ConnectionP
-  (disconnect! [this]))
+(defn mk-order-book [market-code exchange-code sell-orders buy-orders]
+  (OrderBook. market-code exchange-code sell-orders buy-orders))
 
-(defrecord Connection [source sink channel]
-  ConnectionP
-  (disconnect! [this] 
-    (as/untap source channel)
-    (as/unmix sink channel)
-    (as/close! channel)
-    nil))
+;; orderbook itself not very interesting. 
 
-(defn connect! 
-  "Creates and returns a channel connecting a source and a sink."
-  ([source sink] (connect! source sink (as/chan)))
-  ([source sink chan]
-     (as/tap source chan)
-     (as/admix sink chan)
-     (Connection. source sink chan)))
+(def obk (kraken.api.kraken/order-book "BTC/LTC"))
+(def obc (kraken.api.cryptsy/order-book "LTC/BTC"))
+
+obk
+{:market-code "BTC/LTC",
+ :exchange-code "kraken",
+ :sell-orders
+ ({:price 38.8, :volume 0.301}
+  {:price 38.9, :volume 2.718}
+  {:price 38.985, :volume 0.204}),
+ :buy-orders
+ ({:price 38.3, :volume 0.028}
+  {:price 38.131, :volume 0.019}
+  {:price 37.942, :volume 0.019})}
+
+obc
+
+{:market-code "LTC/BTC",
+ :exchange-code "kraken",
+ :sell-orders
+ ({:price 0.02599988, :volume 25.69824808}
+  {:price 0.0259999, :volume 104.83520566}
+  {:price 0.02599998, :volume 47.71399946}),
+ :buy-orders
+ ({:price 0.0259, :volume nil}
+  {:price 0.02587007, :volume nil}
+  {:price 0.02587006, :volume nil}
+  {:price 0.02587003, :volume nil})}
+
+;;; sell-orders is 

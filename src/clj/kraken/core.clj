@@ -13,7 +13,7 @@
 
 ;;; See file kraken.examples.channels.clj for examples
 
-;; (es/delete-indices (es/local-connection))
+ ;; (es/delete-indices (es/local-connection))
 (es/create-indices (es/local-connection))
 (reset! ch/+continue+ true)
 (def poll-interval (* 1000 60 3)) ;; 3 minutes
@@ -127,4 +127,37 @@
    "XNMCZEUR" {:time #<DateTime 2013-12-12T07:08:06.000Z>, :price 4.685},
    "XXBTZEUR" {:time #<DateTime 2013-12-12T10:56:17.000Z>, :price 646.31984}}
 
+  (def print-sink (ch/print-sink))
+
+  ;;; (dis)connecting to the filtered tick source:
+  (def print-tick-connection (connect! (:source es-tick-connection)
+                                       print-sink
+                                       (as/filter> (fn [tick] (println "foo") (= "XLTCZEUR" (:asset tick))) (as/chan))))
+  
+  (def print-tick-connection (connect! (:source es-tick-connection)
+                                       print-sink
+                                       (as/map< (fn [tick] (println "bar") tick)
+                                                (as/filter> (fn [tick] (println "foo") (= "XLTCZEUR" (:asset tick))) (as/chan)))))
+
+  
+  (/ (- 252.0 14) 252.0)
+  (disconnect! print-tick-connection)
+  
+  (reset! continue false)
+  (def continue (atom true))
+  (def s (let [out (as/chan)]
+           (as/go-loop []
+              (when @continue
+                (as/put! out (rand-int 10))
+                (as/<! (as/timeout 1000))
+                (recur)))
+           out))
+  (def p (let [in (as/chan)]
+           (as/go-loop []
+              (let [v (as/<! in)]
+                (when-not (nil? v)
+                  (recur))))
+           in))
+  (as/pipe (as/map< (fn [x] (println "<") (flush) x) s) 
+           (as/map> (fn [x] (println ">") (flush) x) p))
   )
