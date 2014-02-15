@@ -278,10 +278,10 @@
 
 ;; ;;; private api
 
-(defn- cryptsy-private [method public-key private-key &{:keys [input] 
-                                                        :or {input {}}}]
-  (let [query-params (merge input {:method method
-                                   :nonce (tcoerce/to-long (tcore/now))})
+(defn- cryptsy-private [method public-key private-key &{:keys [params] 
+                                                        :or {params {}}}]
+  (let [query-params (merge params {:method method
+                                    :nonce (tcoerce/to-long (tcore/now))})
         query-string (http/generate-query-string query-params)
         signature (sha512-hmac query-string private-key)
         body (json/read-str (:body (http/post "https://api.cryptsy.com/api"
@@ -326,7 +326,7 @@
 
    Outputs: Array of Active Markets 
    
-   cryptsy-id	String value representing a market
+   id	        String value representing a market
    market-code	Name for this market, for example: AMC/BTC
    volume24	24 hour trading volume in this market
    last-trade-price	Last trade price for this market
@@ -335,7 +335,7 @@
 "   
   [public-key private-key]
   (let [ret (cryptsy-private "getmarkets" public-key private-key)]
-    (map #(hash-map :cryptsy-id (get % "marketid")
+    (map #(hash-map :id (get % "marketid")
                     :market-code (get % "label")
                     :volume24 (read-string (get % "current_volume"))
                     :last-trade-price (read-string (get % "last_trade"))
@@ -374,7 +374,7 @@
 (defcomponent [:exchanges :cryptsy] []
   ;; Requires  public and private-keys
   :init init-cryptsy  
-  ;; we could start an update thread and stop it here if wished
+  ;; TODO: start/stop channels for updating state and polling market
   )
 
 (defn- my-transactions 
@@ -393,7 +393,7 @@
    fee	        Fee (If any) Charged for this Transaction (Generally only on Withdrawals)
    trxid	Network Transaction ID (If available)
 "   
-  []
+  [public-key private-key]
   (let [ret (cryptsy-private "mytransactions" public-key private-key)]
     (map #(hash-map :fee (read-string (get % "fee"))
                     :currency (get % "currency")
@@ -404,38 +404,47 @@
                     :time (tcoerce/from-long (* 1000 (get % "timestamp")))
                     :time-zone (get ret "timezone"))
          ret)))
+;; (my-transactions (get-cfg (system) [:exchanges :cryptsy] :public-key) (get-cfg (system) [:exchanges :cryptsy] :private-key))
+
+;;; TO DO: above fns still use code->id. Change them to take market-id code ...
 
 (defn market-trades 
   "Method: markettrades 
    
-   Inputs:
+   Params:
    
-   market-code	Market code for which you are querying
-   
+   market-id	Market code for which you are querying
    
    Outputs: Array of last 1000 Trades for this Market, in Date Decending Order 
    
-   cryptsy-id	A unique ID for the trade
+   id	        A unique ID for the trade
    time	        time trade occurred
    price	The price the trade occurred at
    quantity	Quantity traded
    total	Total value of trade (tradeprice * quantity)
    initial-order-type	The type of order which initiated this trade (\"Buy\"/\"Sell\")
 "   
-  [exchange-info market-code]
-  (let [ret (cryptsy-private "markettrades" public-key private-key :input {"marketid" (market-codes->ids market-code)})]
-    (map #(hash-map :cryptsy-id (get % "tradeid")
-                    :currency (get % "currency")
-                    :amount (read-string (get % "amount"))
-                    :type (get % "type")
-                    :address (get % "address")
-                    :trxid (get % "trxid")
-                    :time (tcoerce/from-long (* 1000 (get % "timestamp")))
-                    :time-zone (get ret "timezone")))))
-;; (def market-code "DOGE/BTC")
-;; (def ret (cryptsy-private "markettrades" public-key private-key :input {"marketid" (market-codes->ids market-code)}))
-;; (first ret)
-;; info
+  [public-key private-key market-id market-time-zone]
+  (let [ret (cryptsy-private "markettrades" public-key private-key :params {"marketid" market-id})]
+    (map (fn [trade]
+           {:id (get trade "tradeid")
+            :time (tcore/from-time-zone (tformat/parse (get trade "datetime"))
+                                        (tcore/time-zone-for-id market-time-zone))
+            :price (read-string (get trade "tradeprice"))
+            :quantity (get trade "quantity")})
+         ret)
+    ))
+
+;; (def public-key (get-cfg (system) [:exchanges :cryptsy] :public-key))
+;; (def private-key (get-cfg (system) [:exchanges :cryptsy] :private-key))
+;; (def market-id (:id (first (filter #(= (:market-code %) "DOGE/BTC") (get-cfg (system) [:exchanges :cryptsy] :markets)))))
+;; (def market-time-zone (get-cfg (system) [:exchanges :cryptsy] :exchange-time-zone))
+;; (market-trades public-key
+;;                private-key
+;;                market-id
+;;                market-time-zone)
+
+;;; TO DO: finish endpoints below
 
 ;;    Method: marketorders 
    

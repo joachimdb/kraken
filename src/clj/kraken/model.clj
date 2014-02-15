@@ -104,9 +104,12 @@
   (assoc-in system (flatten [:components component-id :status]) status))
 
 (defn get-cfg [system component-id & keys]
-  (get-in system (flatten [component-id keys])))
+  (get-in system (concat (flatten [component-id]) keys)))
+
 (defn configure [system component-id cfg]
-  (assoc-in system (flatten [component-id]) cfg))
+  (update-in system (flatten [component-id]) 
+             deep-merge 
+             cfg))
 
 (defn component 
   ([id] (component @+system+ id))
@@ -178,4 +181,6 @@
   :init (fn [system id] (initialize-component system id))
   :start (fn [system id] (start-component system id))
   :stop (fn [system id] (stop-component system id)))
+
+
 
