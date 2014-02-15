@@ -97,6 +97,25 @@ is available."
                  (recur)))))
        out)))
 
+(defn recursive-channel
+  "Creates and returns a channel that contains the results of repeatedly appyting a function to the previous result."
+  ([f initial-value & {:keys [interval on-fail]
+                       :or {interval 1000, on-fail nil}}]
+     (let [out (as/chan)]
+       (as/go-loop [prev initial-value]
+         (let [next (try (f prev) (catch Exception e on-fail))]
+           ;; (println "poll result: " v)
+           (if (nil? next)
+             (as/close! out)
+             (do ;; (println "Putting...")
+               (as/>! out next)
+               ;; (println "Pausing poll...")
+               (as/<! (as/timeout interval))
+               (recur next)))))
+       out)))
+
+;; channel applies a function to the n last results is like a channel that uses the function combine n other channels where the k'th channel is fed with the k-1'th channel and the first channel with the result of combining the channels
+
 ;; (defn pulse 
 ;;   "Creates and returns a channel that outputs true every msecs milliseconds."
 ;;   ([msecs] (pulse nil msecs))

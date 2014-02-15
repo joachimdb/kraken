@@ -1,6 +1,5 @@
 (ns kraken.api.kraken
-  (:use [kraken.api.core]
-        [kraken.model]
+  (:use [kraken.model]
         [kraken.channels])
   (:require [clojure.core.async :as as]
             [clj-time.core :as tcore]
@@ -10,6 +9,17 @@
 
 ;;; DEFINITIONS
 ;;; ===========
+
+(def api-domain (atom "https://api.kraken.com/"))
+
+(defn api-url [x & rest] (apply str @api-domain x rest))
+
+(defn param-string [key-map]
+  (apply str (interpose "&"
+                        (map #(str (name (key %)) "=" (val %)) key-map))))
+
+(defn url-with-params [url key-map]
+  (str url "?" (param-string key-map)))
 
 (defn asset->market-code [asset]
   (.substring (name asset) 1))
@@ -121,7 +131,7 @@
             (vals (:result body)))))
 
 
-(defn parse-tick [tick]
+(defn- parse-tick [tick]
   {:ask-price (double (read-string (first (get-in tick [:a]))))
    :ask-volume (double (read-string (second (get-in tick [:a]))))
    :bid-price (double (read-string (first (get-in tick [:b]))))
@@ -134,7 +144,7 @@
    :high24 (double (read-string (first (get-in tick [:h]))))
    :opening (double (read-string (get-in tick [:o])))})
 
-(defn ticks [& market-codes]
+(defn- ticks [& market-codes]
   "URL: https://api.kraken.com/0/public/Ticker
 
    Input:
@@ -158,17 +168,20 @@
   "Polling channel sending ticks."
   [market-code & {:keys [interval]
                   :or {interval (* 1000 60)}}]
-  (as/mapcat< identity ;; ticks returns a collection of ticks
+  (as/mapcat< (fn [ticks]
+                (map (fn [tick]
+                       (apply mk-tick ((juxt :last-price :last-volume :volume24 :high24 :low24) tick))))
+                ticks)
               (polling-channel #(get (ticks market-code) market-code)
                                :interval interval 
                                :on-fail [])))
 
-(defn parse-spread [[time bid ask]]
+(defn- parse-spread [[time bid ask]]
   {:bid (double (read-string bid))
    :ask (double (read-string ask))
    :time (tcoerce/from-long (* 1000 time))})
 
-(defn spread 
+(defn- spread 
   "URL: https://api.kraken.com/0/public/Spread
 
    Input:
@@ -186,6 +199,8 @@
   (let [pair (market-codes->pairs market-code)
         response (http/get (url-with-params (public-url "Spread") (assoc opts :pair pair)))
         body (json/read-json (:body response))]
+    (when-not (empty? (:error body))
+      (throw (Exception. (str (:error body)))))
     (with-meta (mapcat (fn [[pair data]]
                          (map parse-spread data))
                        (dissoc (:result body) :last))
@@ -222,13 +237,13 @@
 ;; - use principles here to make cryptsy channels
 ;; - Look at core to connect channels to elastic
 
-(defn parse-depth-entry [[price volume time]]
+(defn- parse-depth-entry [[price volume time]]
   {:price (read-string price) 
    :volume (read-string volume) 
    :time (tcoerce/from-long (* 1000 time))})
   
 
-(defn depth [market-code & {:keys [count] :as opts}]
+(defn- depth [market-code & {:keys [count] :as opts}]
   "URL: https://api.kraken.com/0/public/Depth
 
    Input:
@@ -242,12 +257,13 @@
 "
   (let [pair (market-codes->pairs market-code)
         response (http/get (url-with-params (public-url "Depth") (assoc opts :pair pair)))
-        body (json/read-json (:body response))
-        data (val (first (:result body)))]
-    (zipmap (keys data)
-            (map #(mapv parse-depth-entry %)  (vals data)))))
+        body (json/read-json (:body response))]
+    (when-not (empty? (:error body))
+      (throw (Exception. (str (:error body)))))
+    (zipmap (keys (val (first (:result body))))
+            (map #(mapv parse-depth-entry %)  (vals (val (first (:result body))))))))
 
-(defn order-book [market-code]
+(defn- order-book [market-code]
   (let [depth-data (depth market-code)]
     (mk-order-book market-code "kraken"
                    (map #(mk-order (:price %) (:volume %))
@@ -265,47 +281,52 @@
 
 ;;;;;; REMAINING CODE STILL NEEDS TO BE REFACTORED
 
-;; (defn trades [pair & {:keys [since] :as opts}]
-;;   "URL: https://api.kraken.com/0/public/Trades
+(defn- parse-trade [[price volume time bid-type order-type misc]]  
+  {:price (double (read-string price))
+   :volume (double (read-string price))
+   :time (tcoerce/from-long (* 1000 (long time)))
+   :bid-type bid-type
+   :order-type order-type
+   :misc misc})
 
-;;    Input:
-;;    pair = asset pair to get trade data for
-;;    since = return trade data since given id (exclusive)
+(defn trades [market-code & {:keys [since] :as opts}]
+  "URL: https://api.kraken.com/0/public/Trades
 
-;;    Result: 
-;;       array entries(<price>, <volume>, <time>, <buy/sell>, <market/limit>, <miscellaneous>)
+   Input:
+   pair = asset pair to get trade data for
+   since = return trade data since given id (exclusive)
 
-;;    Metadata:
-;;       :last = id to be used as since when polling for new trade data
-;; "
-;;   (let [response (http/get (url-with-params (public-url "Trades") (assoc opts :pair pair)))
-;;         body (json/read-json (:body response))]
-;;     (when-not (empty? (:error body))
-;;       (throw (Exception. (str (:error body)))))
-;;     (with-meta (map #(mk-trade (double (read-string (nth % 0)))
-;;                                (double (read-string (nth % 1)))
-;;                                (tcoerce/from-long (* 1000 (long (nth % 2))))
-;;                                (nth % 3)
-;;                                (nth % 4)
-;;                                (nth % 5)
-;;                                (name (key (first (dissoc (:result body) :last)))))
-;;                     (val (first (dissoc (:result body) :last))))
-;;       {:last (get-in body [:result :last])})))
+   Result: 
+      array entries(<price>, <volume>, <time>, <buy/sell>, <market/limit>, <miscellaneous>)
 
-;; (defn trade-channel 
-;;   ([pair msecs on-fail] 
-;;      (assert @+continue+)
-;;      (trade-channel pair msecs on-fail (fn [] @+continue+)))
-;;   ([pair msecs on-fail last] 
-;;      (assert @+continue+)
-;;      (trade-channel pair msecs on-fail (fn [] @+continue+)))
-;;   ([pair msecs on-fail last continue?]
-;;      (as/mapcat< identity ;; krk/trades returns a list of trades
-;;                  (polling-channel (fn [_ prev] 
-;;                                     (when (continue?) 
-;;                                       (let [new-last (if (nil? prev) last (:last (meta prev)))
-;;                                             ret (trades pair :since new-last)]
-;;                                         ;; (println "sending" ret)
-;;                                         ret)))
-;;                                   msecs
-;;                                   on-fail))))
+   Metadata:
+      :last = id to be used as since when polling for new trade data
+"
+  (let [pair (market-codes->pairs market-code)
+        response (http/get (url-with-params (public-url "Trades") (assoc opts :pair pair)))
+        body (json/read-json (:body response))]
+    (when-not (empty? (:error body))
+      (throw (Exception. (str (:error body)))))
+    (with-meta (mapv parse-trade (get-in body [:result (keyword pair)]))
+      {:last (get-in body [:result :last])})))
+;; (def ts (trades "LTC/EUR" ))
+;; (meta ts)
+
+(defn trade-channel [market-code & {:keys [interval]
+                                    :or {interval (* 1000 60)}}]
+  (as/mapcat< (fn [trades]
+                (map (fn [trade]
+                       (apply mk-trade ((juxt :price :volume :time) trade)))
+                     trades)) ;; trades returns a list of trades
+              (recursive-channel (fn [prev] (trades market-code :since (:last (meta prev))))
+                                 nil
+                                 :interval interval
+                                 :on-fail false)))
+
+
+;; (def tc (trade-channel "LTC/EUR" :interval 5000))
+;; (dotimes [i 100]
+;;   (as/take! tc (fn [v] (println "Got " v) (flush))))
+;; (as/close! tc)
+
+

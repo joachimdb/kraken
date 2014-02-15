@@ -3,7 +3,7 @@
             [clj-time.coerce :as tcoerce]
             [clojure.core.async :as as]))
 
-(def currencies ["LTC" "BTC" "DOGE"])
+;; TO DO: use loging instead of println
 
 (defn primary-currency [^java.lang.String market-code]
   (.substring market-code 0 (.indexOf market-code "/")))
@@ -11,34 +11,18 @@
 (defn secondary-currency [^java.lang.String market-code]
   (.substring market-code (inc (.indexOf market-code "/"))))
 
-(def mappings {:trade 
-               {:properties {:price {:type "double"}
-                             :volume {:type "double"}
-                             :time {:type "date"}
-                             :bid-type {:type "string", :index "not_analyzed"}
-                             :order-type {:type "string", :index "not_analyzed"}
-                             :misc {:type "string"}
-                             :market {:type "string", :index "not_analyzed"}
-                             :exchange {:type "string", :index "not_analyzed"}}}
-               :order 
-               {:properties {:volume {:type "double"}
-                             :price {:type "double"}
-                             :bid-type {:type "string", :index "not_analyzed"}
-                             :order-type {:type "string", :index "not_analyzed"}
-                             :market {:type "string", :index "not_analyzed"}
-                             :exchange {:type "string", :index "not_analyzed"}}}})
+(defrecord Tick [last-trade-price last-volume volume24 high24 low24 
+                 ;; spread, ask-volume, ...
+                 ])
+(defn mk-tick [last-trade-price last-volume volume24 high24 low24] 
+  (Tick. last-trade-price last-volume volume24 high24 low24))
 
 (defrecord Trade [^java.lang.Double price 
                   ^java.lang.Double volume
-                  ^org.joda.time.DateTime time
-                  ^java.lang.String bid-type
-                  ^java.lang.String order-type
-                  ^java.lang.String misc
-                  ^java.lang.String market
-                  ^java.lang.String exchange])
+                  ^org.joda.time.DateTime time])
 
-(defn mk-trade [price volume time bid-type order-type misc market exchange]
-  (Trade. price volume time bid-type order-type misc market exchange))
+(defn mk-trade [price volume time]
+  (Trade. price volume time))
 
 (defrecord Order [^java.lang.Double price 
                   ^java.lang.Double volume])
@@ -46,43 +30,152 @@
 (defn mk-order [price volume]
   (Order. price volume))
 
-(defrecord OrderBook [^java.lang.String market-code
-                      ^java.lang.String exchange-code
-                      sell-orders
+(defrecord OrderBook [sell-orders
                       buy-orders])
 
-(defn mk-order-book [market-code exchange-code sell-orders buy-orders]
-  (OrderBook. market-code exchange-code sell-orders buy-orders))
+(defn mk-order-book [sell-orders buy-orders]
+  ;; TO DO: orderbook itself not very interesting => compute spread/depth measures
+  (OrderBook. sell-orders buy-orders))
 
-;; orderbook itself not very interesting. 
+;;;;;;; ----- Meta Model ------
 
-(def obk (kraken.api.kraken/order-book "BTC/LTC"))
-(def obc (kraken.api.cryptsy/order-book "LTC/BTC"))
+(defn deep-merge
+  "Recursively merges maps. If keys are not maps, the last value wins."
+  [& vals]
+  (if (every? map? vals)
+    (apply merge-with deep-merge vals)
+    (last vals)))
 
-obk
-{:market-code "BTC/LTC",
- :exchange-code "kraken",
- :sell-orders
- ({:price 38.8, :volume 0.301}
-  {:price 38.9, :volume 2.718}
-  {:price 38.985, :volume 0.204}),
- :buy-orders
- ({:price 38.3, :volume 0.028}
-  {:price 38.131, :volume 0.019}
-  {:price 37.942, :volume 0.019})}
+(defprotocol ComponentP
+  (initialize [this system])
+  (stop [this system])
+  (start [this system]))
 
-obc
+(defrecord Component [id f-init f-start f-stop]
+  ;; TO DO: in case of dependencies, it's better to work through the list of dependencies sequentially (i.e. functionally). We then need to add a record slot for depencies.
+  ComponentP
+  (initialize [this system] (f-init system id))
+  (start [this system] (f-start system id))
+  (stop [this system] (f-stop system id)))
 
-{:market-code "LTC/BTC",
- :exchange-code "kraken",
- :sell-orders
- ({:price 0.02599988, :volume 25.69824808}
-  {:price 0.0259999, :volume 104.83520566}
-  {:price 0.02599998, :volume 47.71399946}),
- :buy-orders
- ({:price 0.0259, :volume nil}
-  {:price 0.02587007, :volume nil}
-  {:price 0.02587006, :volume nil}
-  {:price 0.02587003, :volume nil})}
+(defn mk-component [id f-init f-start f-stop]
+  (Component. id f-init f-start f-stop))
 
-;;; sell-orders is 
+(def +system+ (atom nil))
+
+(defn system []
+  @+system+)
+
+(defmacro defcomponent [id [:as args] & {:keys [init start stop dependencies]
+                                         :or {init (fn [_ system] system)
+                                              start (fn [_ system] system)
+                                              stop(fn [_ system] system)
+                                              dependencies #{}}}]
+  `(swap! +system+ 
+          #(update-in 
+            (deep-merge %
+                        (assoc-in {}
+                                  (flatten [:components ~id]) 
+                                  {:instance (mk-component ~id ~init ~start ~stop)
+                                   :status nil}))
+            [:components :system :dependencies]
+            clojure.set/union 
+            ~(disj (conj dependencies id) :system))))
+
+(defn dependencies [system component-id]
+  (get-in system (flatten [:components component-id :dependencies])))
+
+(defn status [system component-id]
+  (get-in system (flatten [:components component-id :status])))
+(defn running? [system component-id]
+  (= :running (status system component-id)))
+(defn starting? [system component-id]
+  (= :starting (status system component-id)))
+(defn stopped? [system component-id]
+  (= :stopped (status system component-id)))
+(defn stopping? [system component-id]
+  (= :stopping (status system component-id)))
+(defn initialized? [system component-id]
+  (= :initialized (status system component-id)))
+(defn initializing? [system component-id]
+  (= :initializing (status system component-id)))
+
+(defn set-status [system component-id status]
+  (assoc-in system (flatten [:components component-id :status]) status))
+
+(defn get-cfg [system component-id & keys]
+  (get-in system (flatten [component-id keys])))
+(defn configure [system component-id cfg]
+  (assoc-in system (flatten [component-id]) cfg))
+
+(defn component 
+  ([id] (component @+system+ id))
+  ([system id]
+     (get-in system (flatten [:components id :instance]))))
+
+(defn stop-component [system component-id]
+  (if (or (stopped? system component-id)
+          (stopping? system component-id))
+    system
+    (try (set-status 
+          (stop (component system component-id)
+                (reduce stop-component
+                        (set-status system component-id :stopping)
+                        (dependencies system component-id)))
+          component-id
+          :stopped)
+         (catch Exception e 
+           (set-status system component-id
+                       {:failed :stopping
+                        :exception e})))))
+
+(defn initialize-component [system component-id]
+  (if (or (initialized? system component-id)
+          (initializing? system component-id))
+    system
+    (let [dependencies (dependencies system component-id)
+          fresh-system (loop [s (set-status system component-id :initializing) 
+                              d dependencies]
+                         (if (empty? d)
+                           s
+                           (recur (initialize-component s (first d))
+                                  (rest d))))]
+      (println "Initializing component " component-id)
+      (if (empty? dependencies)
+        (println "   No dependencies")
+        (do (println "   " (count dependencies) " dependencies") 
+            (doseq [d dependencies]
+              (println "   - dependency: " d ", status: " (status fresh-system d)))))
+      (if (every? (partial initialized? fresh-system) dependencies)
+        (try (set-status 
+              (initialize (component fresh-system component-id) fresh-system)
+              component-id
+              :initialized)
+             (catch Exception e
+               (def si fresh-system)
+               (def ci component-id)
+               (set-status fresh-system component-id 
+                           e)))
+        fresh-system))))
+
+(defn start-component [system component-id]
+  (if (or (running? system component-id)
+          (starting? system component-id)
+          (not (every? (partial running? system) (dependencies system component-id))))
+    system
+    (try (set-status 
+          (start 
+           (component system component-id)
+           (reduce start-component
+                   (set-status (initialize-component system component-id) component-id :starting)
+                   (dependencies system component-id))))
+         (catch Exception e 
+           (set-status system component-id
+                       {:failed :starting
+                        :exception e})))))
+  
+(defcomponent :system []
+  :init (fn [system id] (initialize-component system id))
+  :start (fn [system id] (start-component system id))
+  :stop (fn [system id] (stop-component system id)))
+

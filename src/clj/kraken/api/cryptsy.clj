@@ -1,6 +1,7 @@
 (ns kraken.api.cryptsy
   (:use [kraken.model]
-        [kraken.channels])
+        [kraken.channels]
+        [pandect.core])
   (:require [clojure.core.async :as as]
             [clj-time.core :as tcore]
             [clj-time.coerce :as tcoerce]
@@ -171,6 +172,38 @@
                         "XJO/BTC" 115,
                         "NET/BTC" 134})
 
+                
+;; (reset-market-ids!)
+
+(defn orders 
+  "Same as market-data, but doesn't return values for any trade related keys"
+  [& market-codes]
+  (if (empty? market-codes)
+    (let [all-orders (get (cryptsy-public "orderdata") "return")]
+      (zipmap (keys all-orders)
+              (map parse-market-data (vals all-orders))))
+    (zipmap market-codes
+            (map (fn [market-code]
+                   (let [md (val (first (get (cryptsy-public "singleorderdata" :query-params {:marketid (market-codes->ids market-code)})
+                                             "return")))]
+                     (dissoc (parse-market-data md)
+                             :recent-trades :last-trade-time :last-trade-price :volume)))
+                 market-codes))))
+;; (orders "LTC/BTC")
+
+(defn order-book-channel [market-code & {:keys [interval]
+                                         :or {interval (* 1000 60)}}]
+  (as/filter< identity ;; filter out on-fails (false)
+              (polling-channel (fn []
+                                 (let [orders (get (orders market-code) market-code)]
+                                   (mk-order-book (map #(mk-order (:price %) (:quantity %))
+                                                       (:sell-orders orders))
+                                                  (map #(mk-order (:price %) (:volume %))
+                                                       (:buy-orders orders)))))
+                               :interval interval
+                               :on-fail false)))
+
+
 (defn market-data 
  "General Market Data
 
@@ -191,7 +224,7 @@
       :secondarycode :BTC,
       :lasttradeprice 0.00000219
       :lasttradetime #<DateTime 2014-01-25T17:20:23.000Z>,
-      :volume \"1765529079.68198780\"
+      :volume 1765529079.68198780
       :recent-trades
       [{:price 1.58E-6, :quantity 23161.61437057, :time #<DateTime 2014-02-05T17:29:13.000Z>, :id 21585792, :total 0.03659535}
        {:price 1.59E-6, :quantity 14502.96282435, :time #<DateTime 2014-02-05T17:29:06.000Z>, :id 21585788, :total 0.02305971}
@@ -208,149 +241,384 @@
 "
   [& market-labels]
   (if (empty? market-labels)
-    (let [all-mdata (try (get-in (cryptsy-public "marketdatav2") ["return" "markets"])
-                         (catch Exception e {}))]
+    (let [all-mdata (get-in (cryptsy-public "marketdatav2") ["return" "markets"])]
       (zipmap (keys all-mdata)
               (map parse-market-data (vals all-mdata))))
     (zipmap market-labels
-            (map #(try (parse-market-data 
-                        (val 
-                         (first 
-                          (get-in (cryptsy-public "singlemarketdata" :query-params {:marketid %})
-                                  ["return" "markets"]))))
-                       (catch Exception e {}))
+            (map #(parse-market-data 
+                   (val 
+                    (first 
+                     (get-in (cryptsy-public "singlemarketdata" :query-params {:marketid %})
+                             ["return" "markets"]))))
                  (map market-codes->ids market-labels)))))
-                 
-;; (reset-market-ids!)
 
+(defn- trades [market-data]
+  (map #(apply mk-trade ((juxt :prive :quantity :time) %))
+       (:recent-trades market-data)))
 
-(defn orders 
-  "Same as market-data, but doesn't return values for any trade related keys"
-  [& market-codes]
-  (if (empty? market-codes)
-    (let [all-orders (try (get (cryptsy-public "orderdata") "return")
-                          (catch Exception e {}))]
-      (zipmap (keys all-orders)
-              (map parse-market-data (vals all-orders))))
-    (zipmap market-codes
-            (map (fn [market-code]
-                   (if-let [md (try (val (first (get (cryptsy-public "singleorderdata" :query-params {:marketid (market-codes->ids market-code)})
-                                                     "return")))
-                                    (catch Exception e false))]
-                     (dissoc (parse-market-data md)
-                             :recent-trades :last-trade-time :last-trade-price :volume)
-                     {}))
-                 market-codes))))
-;; (orders "LTC/BTC")
+(defn- order-book [market-data]
+  (mk-order-book (map #(mk-order (:price %) (:quantity %))
+                      (:sell-orders market-data))
+                 (map #(mk-order (:price %) (:volume %))
+                      (:buy-orders market-data))))
 
-(defn order-book [market-code]
-  (let [orders (get (orders market-code) market-code)]
-    (mk-order-book market-code "kraken"
-                   (map #(mk-order (:price %) (:quantity %))
-                        (:sell-orders orders))
-                   (map #(mk-order (:price %) (:volume %))
-                        (:buy-orders orders)))))
+;; (defn- ticks [market-data] ... )
 
-(defn order-book-channel [market-code & {:keys [interval]
-                                         :or {interval (* 1000 60)}}]
-  (as/filter< identity ;; filter out on-fails (false)
-              (polling-channel #(order-book market-code)
-                               :interval interval
-                               :on-fail false)))
+(defn- market-data-channel [market-label & {:keys [interval]
+                                            :or {interval (* 1000 60)}}]
+  (recursive-channel (fn [prev] 
+                       (get (market-data market-label) market-label))
+                     nil
+                     :interval interval
+                     :on-fail false))
 
-
+;; Market-data returns information that in kraken is spread over ticks, order-books and trades.
+;; Here we could provide a publication factory for publishing trades, ticks and order-books.
+;; In kraken we could provide a market-data channel that combines trades, ticks and order-books channels.
 
 ;; ;;; private api
 
+(defn- cryptsy-private [method public-key private-key &{:keys [input] 
+                                                        :or {input {}}}]
+  (let [query-params (merge input {:method method
+                                   :nonce (tcoerce/to-long (tcore/now))})
+        query-string (http/generate-query-string query-params)
+        signature (sha512-hmac query-string private-key)
+        body (json/read-str (:body (http/post "https://api.cryptsy.com/api"
+                                              {:form-params query-params
+                                               :headers {"sign" signature
+                                                         "key" public-key}})))]
+    (when (= "0" (get body "success"))
+      (throw (Exception. (get body "error"))))
+    (get body "return")))
+
+(defn- get-info 
+  "Method: getinfo 
+
+   Inputs: n/a 
+
+   Outputs: 
+
+   :available	Array of currencies and the balances availalbe for each
+   :held	Array of currencies and the amounts currently on hold for open orders
+   :info-time	Time at server when info was served (in UTC)
+   :server-time-zone Time zone at server
+   :open-order-count	Count of open orders on your account
+"
+  [public-key private-key]
+  (let [ret (cryptsy-private "getinfo" public-key private-key)]
+    {:available (zipmap (keys (get ret "balances_available"))
+                        (map read-string (vals (get ret "balances_available"))))
+     :held (zipmap (keys (get ret "balances_hold"))
+                   (map read-string (vals (get ret "balances_hold"))))
+     :open-order-count (get ret "openordercount")
+     :info-time (tcoerce/from-long (* 1000 (get ret "servertimestamp")))
+     :server-time-zone (get ret "servertimezone")
+     ;; :time (tcore/from-time-zone (tformat/parse (get ret "serverdatetime"))
+     ;;                             (tcore/time-zone-for-id (get ret "servertimezone")))
+     }))
+;; (def info (get-info public-key private-key))
+
+(defn- get-markets 
+  "Method: getmarkets 
+
+   Inputs: n/a 
+
+   Outputs: Array of Active Markets 
+   
+   cryptsy-id	String value representing a market
+   market-code	Name for this market, for example: AMC/BTC
+   volume24	24 hour trading volume in this market
+   last-trade-price	Last trade price for this market
+   high24	24 hour highest trade price in this market
+   low24	24 hour lowest trade price in this market
+"   
+  [public-key private-key]
+  (let [ret (cryptsy-private "getmarkets" public-key private-key)]
+    (map #(hash-map :cryptsy-id (get % "marketid")
+                    :market-code (get % "label")
+                    :volume24 (read-string (get % "current_volume"))
+                    :last-trade-price (read-string (get % "last_trade"))
+                    :high24 (read-string (get % "high_trade"))
+                    :low24 (read-string (get % "low_trade")))
+         ret)))
+;; (def markets (get-markets))
+
 ;; (def public-key "9ce5ef061247770f79a6f6213b4e7c31cf655c3f")
-;; (def private-key (slurp "/Users/joachim/.cryptsy/private-key"))
+;; (def private-key (slurp (str (System/getProperty "user.home") "/.cryptsy/private-key")))
+;; (read-string (slurp (str (System/getProperty "user.home") "/.cryptsy/config.edn")))
+;; (def info (get-info public-key private-key))
+;; (def markets (get-markets publick-key private-key))
 
-;; Authorization is performed by sending the following variables into the request header: 
+(defn init-cryptsy [system id]
+  (let [public-key (get-cfg system id :public-key)
+        private-key (get-cfg system id :private-key)]
+    (if (and public-key private-key)
+      (let [info (get-info public-key private-key)
+            markets (get-markets public-key private-key)]
+        (configure system id
+                   {:balances
+                    (deep-merge (zipmap (keys (remove #(zero? (val %)) (:available info)))
+                                        (map #(hash-map :unheld %)
+                                             (vals (remove #(zero? (val %)) (:available info)))))
+                                (zipmap (keys (remove #(zero? (val %)) (:held info)))
+                                        (map #(hash-map :held %)
+                                             (vals (remove #(zero? (val %)) (:held info))))))
+                    :last-updated (:info-time info)
+                    :exchange-time-zone (:server-time-zone info)
+                    :open-order-count (:open-order-count info)
+                    :markets markets}))
+      (throw (Exception. "Cannot initialize cryptsy: keys not specified in system")))))
+;; (init-cryptsy kraken.model/ts [:exchanges :cryptsy])
 
-;; Key — Public API key. An example API key: 5a8808b25e3f59d8818d3fbc0ce993fbb82dcf90 
+(defcomponent [:exchanges :cryptsy] []
+  ;; Requires  public and private-keys
+  :init init-cryptsy  
+  ;; we could start an update thread and stop it here if wished
+  )
 
-;; Sign — ALL POST data (param=val&param1=val1) signed by a secret key according to HMAC-SHA512 method. Your secret key and public keys can be generated from your account settings page. 
+(defn- my-transactions 
+  "Method: mytransactions 
+   
+   Inputs: n/a 
+   
+   Outputs: Array of Deposits and Withdrawals on your account 
+   
+   currency	Name of currency account
+   time  	The timestamp the activity posted
+   timezone	Server timezone
+   type	        Type of activity. (Deposit / Withdrawal)
+   address	Address to which the deposit posted or Withdrawal was sent
+   amount	Amount of transaction (Not including any fees)
+   fee	        Fee (If any) Charged for this Transaction (Generally only on Withdrawals)
+   trxid	Network Transaction ID (If available)
+"   
+  []
+  (let [ret (cryptsy-private "mytransactions" public-key private-key)]
+    (map #(hash-map :fee (read-string (get % "fee"))
+                    :currency (get % "currency")
+                    :amount (read-string (get % "amount"))
+                    :type (get % "type")
+                    :address (get % "address")
+                    :trxid (get % "trxid")
+                    :time (tcoerce/from-long (* 1000 (get % "timestamp")))
+                    :time-zone (get ret "timezone"))
+         ret)))
 
-;; An additional security element must be passed into the post: 
+(defn market-trades 
+  "Method: markettrades 
+   
+   Inputs:
+   
+   market-code	Market code for which you are querying
+   
+   
+   Outputs: Array of last 1000 Trades for this Market, in Date Decending Order 
+   
+   cryptsy-id	A unique ID for the trade
+   time	        time trade occurred
+   price	The price the trade occurred at
+   quantity	Quantity traded
+   total	Total value of trade (tradeprice * quantity)
+   initial-order-type	The type of order which initiated this trade (\"Buy\"/\"Sell\")
+"   
+  [exchange-info market-code]
+  (let [ret (cryptsy-private "markettrades" public-key private-key :input {"marketid" (market-codes->ids market-code)})]
+    (map #(hash-map :cryptsy-id (get % "tradeid")
+                    :currency (get % "currency")
+                    :amount (read-string (get % "amount"))
+                    :type (get % "type")
+                    :address (get % "address")
+                    :trxid (get % "trxid")
+                    :time (tcoerce/from-long (* 1000 (get % "timestamp")))
+                    :time-zone (get ret "timezone")))))
+;; (def market-code "DOGE/BTC")
+;; (def ret (cryptsy-private "markettrades" public-key private-key :input {"marketid" (market-codes->ids market-code)}))
+;; (first ret)
+;; info
 
-;; nonce - All requests must also include a special nonce POST parameter with incrementing integer. The integer must always be greater than the previous requests nonce value. 
-
-;; (http/post "http://pubapi.cryptsy.com/api.php?method=getinfo"
-;;            {"Key" "9ce5ef061247770f79a6f6213b4e7c31cf655c3f"
-;;             "nonce" (clj-time.core/now)})
-
-;; (def public-key "9ce5ef061247770f79a6f6213b4e7c31cf655c3f")
-;; (def private-key (slurp "/Users/joachim/.cryptsy/private-key"))
-
-
-;; (defn cryptsy-private [method key secret-key &{:keys [query-params] 
-;;                                                :or {query-params {}}}]
-;;   (let [nonce (clj-time.coerce/to-long (clj-time.core/now))
-;;         post-data (http/generate-query-string query-params) )])
-
-
-;; ;;; or (http-request-for request-method http-url body) ???
-
-
-
-;;   (json/read-str (:body (http/ (str "http://pubapi.cryptsy.com/api.php?method=" method)
-;;                                {:query-params query-params} ))
-;;                  :key-fn keyword))
-;; (cryptsy "getinfo" )
-
-;; Inputs: n/a 
-
-;; Outputs: 
-
-;; balances_available	Array of currencies and the balances availalbe for each
-;; balances_hold	Array of currencies and the amounts currently on hold for open orders
-;; servertimestamp	Current server timestamp
-;; servertimezone	Current timezone for the server
-;; serverdatetime	Current date/time on the server
-;; openordercount	Count of open orders on your account
-
-
-;; <?php
-
-;; function api_query($method, array $req = array()) {
-;;         // API settings
-;;         $key = ''; // your API-key
-;;         $secret = ''; // your Secret-key
- 
-;;         $req['method'] = $method;
-;;         $mt = explode(' ', microtime());
-;;         $req['nonce'] = $mt[1];
-       
-;;         // generate the POST data string
-;;         $post_data = http_build_query($req, '', '&');
-
-;;         $sign = hash_hmac("sha512", $post_data, $secret);
- 
-;;         // generate the extra headers
-;;         $headers = array(
-;;                 'Sign: '.$sign,
-;;                 'Key: '.$key,
-;;         );
- 
-;;         // our curl handle (initialize if required)
-;;         static $ch = null;
-;;         if (is_null($ch)) {
-;;                 $ch = curl_init();
-;;                 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-;;                 curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/4.0 (compatible; Cryptsy API PHP client; '.php_uname('s').'; PHP/'.phpversion().')');
-;;         }
-;;         curl_setopt($ch, CURLOPT_URL, 'https://www.cryptsy.com/api');
-;;         curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
-;;         curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-;;         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, FALSE);
- 
-;;         // run the query
-;;         $res = curl_exec($ch);
-
-;;         if ($res === false) throw new Exception('Could not get reply: '.curl_error($ch));
-;;         $dec = json_decode($res, true);
-;;         if (!$dec) throw new Exception('Invalid data received, please make sure connection is working and requested API exists');
-;;         return $dec;
-;; }
- 
-;; $result = api_query("getinfo");
+;;    Method: marketorders 
+   
+;;    Inputs:
+   
+;;    marketid	Market ID for which you are querying
+   
+   
+;;    Outputs: 2 Arrays. First array is sellorders listing current open sell orders ordered price ascending. Second array is buyorders listing current open buy orders ordered price descending. 
+   
+;;    sellprice	If a sell order, price which order is selling at
+;;    buyprice	If a buy order, price the order is buying at
+;;    quantity	Quantity on order
+;;    total	Total value of order (price * quantity)
+   
+   
+;;    Method: mytrades 
+   
+;;    Inputs:
+   
+;;    marketid	Market ID for which you are querying
+;;    limit	(optional) Limit the number of results. Default: 200
+   
+   
+;;    Outputs: Array your Trades for this Market, in Date Decending Order 
+   
+;;    tradeid	An integer identifier for this trade
+;;    tradetype	Type of trade (Buy/Sell)
+;;    datetime	Server datetime trade occurred
+;;    tradeprice	The price the trade occurred at
+;;    quantity	Quantity traded
+;;    total	Total value of trade (tradeprice * quantity) - Does not include fees
+;;    fee	Fee Charged for this Trade
+;;    initiate_ordertype	The type of order which initiated this trade
+;;    order_id	Original order id this trade was executed against
+   
+   
+;;    Method: allmytrades 
+   
+;;    Inputs: n/a 
+   
+;;    Outputs: Array your Trades for all Markets, in Date Decending Order 
+   
+;;    tradeid	An integer identifier for this trade
+;;    tradetype	Type of trade (Buy/Sell)
+;;    datetime	Server datetime trade occurred
+;;    marketid	The market in which the trade occurred
+;;    tradeprice	The price the trade occurred at
+;;    quantity	Quantity traded
+;;    total	Total value of trade (tradeprice * quantity) - Does not include fees
+;;    fee	Fee Charged for this Trade
+;;    initiate_ordertype	The type of order which initiated this trade
+;;    order_id	Original order id this trade was executed against
+   
+   
+;;    Method: myorders 
+   
+;;    Inputs:
+   
+;;    marketid	Market ID for which you are querying
+   
+   
+;;    Outputs: Array of your orders for this market listing your current open sell and buy orders. 
+   
+;;    orderid	Order ID for this order
+;;    created	Datetime the order was created
+;;    ordertype	Type of order (Buy/Sell)
+;;    price	The price per unit for this order
+;;    quantity	Quantity remaining for this order
+;;    total	Total value of order (price * quantity)
+;;    orig_quantity	Original Total Order Quantity
+   
+   
+;;    Method: depth 
+   
+;;    Inputs:
+   
+;;    marketid	Market ID for which you are querying
+   
+   
+;;    Outputs: Array of buy and sell orders on the market representing market depth. 
+   
+;;    Output Format is:
+;;    array(
+;;      'sell'=>array(
+;;        array(price,quantity), 
+;;        array(price,quantity),
+;;        ....
+;;      ), 
+;;      'buy'=>array(
+;;        array(price,quantity), 
+;;        array(price,quantity),
+;;        ....
+;;      )
+;;    )
+   
+   
+;;    Method: allmyorders 
+   
+;;    Inputs: n/a 
+   
+;;    Outputs: Array of all open orders for your account. 
+   
+;;    orderid	Order ID for this order
+;;    marketid	The Market ID this order was created for
+;;    created	Datetime the order was created
+;;    ordertype	Type of order (Buy/Sell)
+;;    price	The price per unit for this order
+;;    quantity	Quantity remaining for this order
+;;    total	Total value of order (price * quantity)
+;;    orig_quantity	Original Total Order Quantity
+   
+   
+;;    Method: createorder 
+   
+;;    Inputs:
+   
+;;    marketid	Market ID for which you are creating an order for
+;;    ordertype	Order type you are creating (Buy/Sell)
+;;    quantity	Amount of units you are buying/selling in this order
+;;    price	Price per unit you are buying/selling at
+   
+   
+;;    Outputs: 
+   
+;;    orderid	If successful, the Order ID for the order which was created
+   
+   
+;;    Method: cancelorder 
+   
+;;    Inputs:
+   
+;;    orderid	Order ID for which you would like to cancel
+   
+   
+;;    Outputs: n/a. If successful, it will return a success code. 
+   
+;;    Method: cancelmarketorders 
+   
+;;    Inputs:
+   
+;;    marketid	Market ID for which you would like to cancel all open orders
+   
+   
+;;    Outputs: 
+   
+;;    return	Array for return information on each order cancelled
+   
+   
+;;    Method: cancelallorders 
+   
+;;    Inputs: N/A 
+   
+;;    Outputs: 
+   
+;;    return	Array for return information on each order cancelled
+   
+   
+;;    Method: calculatefees 
+   
+;;    Inputs:
+   
+;;    ordertype	Order type you are calculating for (Buy/Sell)
+;;    quantity	Amount of units you are buying/selling
+;;    price	Price per unit you are buying/selling at
+   
+   
+;;    Outputs: 
+   
+;;    fee	The that would be charged for provided inputs
+;;    net	The net total with fees
+   
+   
+;;    Method: generatenewaddress 
+   
+;;    Inputs: (either currencyid OR currencycode required - you do not have to supply both)
+   
+;;    currencyid	Currency ID for the coin you want to generate a new address for (ie. 3 = BitCoin)
+;;    currencycode	Currency Code for the coin you want to generate a new address for (ie. BTC = BitCoin)
+   
+   
+;;    Outputs: 
+   
+;;    address	The new generated address
+   
+   
