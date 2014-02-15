@@ -2,32 +2,28 @@
   (:use [kraken.model]
         [kraken.api.cryptsy]))
 
-;;; here we provide all that is needed to use either of the supported api's, beginning with
-;;; selecting one and initializing it.
+(system)
 
 ;;; initial configuration of cryptsy:
 (swap! +system+ #(initialize-component
                   (configure % [:exchanges :cryptsy] (read-string (slurp (str (System/getProperty "user.home") "/.cryptsy/config.edn"))))
                   [:exchanges :cryptsy]))
+(system)
 
-;;; So below protocols etc need to move to model so that they are accessible from
-;;; kraken.api.cryptsy and kraken.api.kraken?
-;; (defprotocol ExchangeP
-;;   (tick-channel [this])
-;;   (trade-channel [this]))
+(def public-key (get-cfg (system) [:exchanges :cryptsy] :public-key))
+(def private-key (get-cfg (system) [:exchanges :cryptsy] :private-key))
+(def market-id (:id (first (filter #(= (:market-code %) "DOGE/BTC") (get-cfg (system) [:exchanges :cryptsy] :markets)))))
+(def exchange-time-zone (get-cfg (system) [:exchanges :cryptsy] :exchange-time-zone))
 
-;; (defrecord Exchange [name instance]
-;;   ComponentP
-;;   (initialize [this system] ((partial initialize ))))
+(market-trades public-key
+               private-key
+               market-id
+               exchange-time-zone)
 
-;;;
-;; (defcomponent :exchanges
-;;   (reify ComponentP
-;;     ()))
-
-;; (defn initialize [cfg]
-;;   (cond (= :cryptsy (get-in cfg :api )) )
-;;   (assoc-in cfg)
-;;   )
-
-
+;;; => TODO:
+;;; - make functions to call endpoints without having to fetch keys etc (should go in cryptsy)
+;;; - provide channels in cryptsy component
+;;; - also make component for kraken
+;;; - then see what next, maybe make exchanges component, 
+;;; - make elastic component (should go in kraken.elastic...)
+;;; - combine (in kraken.core)

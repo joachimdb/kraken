@@ -105,10 +105,12 @@
 
 (defn get-cfg [system component-id & keys]
   (get-in system (concat (flatten [component-id]) keys)))
-
-(defn configure [system component-id cfg]
+(defn set-cfg [system component-id cfg]
   (update-in system (flatten [component-id]) 
              deep-merge 
+             cfg))
+(defn configure [system component-id cfg]
+  (assoc-in  system (flatten [component-id]) 
              cfg))
 
 (defn component 
