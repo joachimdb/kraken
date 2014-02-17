@@ -4,7 +4,7 @@
             [clj-time.coerce :as tcoerce]))
 
 (defn rec-channel [f x0 interval control-channel error-channel]
-  (let [out (as/chan)]   
+  (let [out (as/chan)]
     (as/go 
       (loop [x x0
              status :stop
@@ -28,7 +28,7 @@
               :else (let [_ (do (println "case else") (flush))
                           control (as/<! control-channel)]
                       (println "Got control" control)
-                      (recur x control [nil nil])))))
+                      (recur x (or control :close) [nil nil])))))
     out))
 
 ;; (def poll-interval 5000)
