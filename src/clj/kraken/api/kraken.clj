@@ -164,18 +164,6 @@
                        (parse-tick tick-data)))))
                (map market-codes->pairs market-codes))))
 
-(defn tick-channel 
-  "Polling channel sending ticks."
-  [market-code & {:keys [interval]
-                  :or {interval (* 1000 60)}}]
-  (as/mapcat< (fn [ticks]
-                (map (fn [tick]
-                       (apply mk-tick ((juxt :last-price :last-volume :volume24 :high24 :low24) tick))))
-                ticks)
-              (polling-channel #(get (ticks market-code) market-code)
-                               :interval interval 
-                               :on-fail [])))
-
 (defn- parse-spread [[time bid ask]]
   {:bid (double (read-string bid))
    :ask (double (read-string ask))
@@ -207,26 +195,6 @@
       {:last (get-in body [:result :last])
        :market-code market-code})))
 ;; (spread "LTC/EUR")
-
-(defn spread-channel 
-  "Polling channel sending spread information"
-  [market-code & {:keys [interval since]
-                  :or {interval (* 1000 60)}}]
-  (let [ch (as/chan)
-        last (atom nil)
-        last-processed (atom 0)
-        get-spread (fn [] (try (spread market-code :since @last)
-                               (catch Exception e false)))]
-    (as/go 
-      (loop []
-        (when-let [next (get-spread)]
-          (when (> (count next) @last-processed)
-            (as/>! ch (drop @last-processed next)))
-          (reset! last (:last (meta next)))
-          (reset! last-processed (count (filter #(= (* 1000 @last) (tcoerce/to-long (:time %))) next))))
-        (as/<! (as/timeout interval))
-        (recur)))
-    (as/mapcat< identity ch)))
 
 ;; (defn- pair-code [market-code]
 ;;   (clojure.string/replace (name market-code) #"[ZX](...)[ZX](...)" "$1/$2"))
@@ -272,12 +240,6 @@
                         (:bids depth-data)))))
 
 ;; (depth "LTC/BTC")
-(defn order-book-channel [market-code & {:keys [interval]
-                                         :or {interval (* 1000 60)}}]
-  (as/filter< identity ;; filter out on-fails (false)
-              (polling-channel #(order-book market-code)
-                               :interval interval
-                               :on-fail false)))
 
 ;;;;;; REMAINING CODE STILL NEEDS TO BE REFACTORED
 
@@ -312,16 +274,7 @@
 ;; (def ts (trades "LTC/EUR" ))
 ;; (meta ts)
 
-(defn trade-channel [market-code & {:keys [interval]
-                                    :or {interval (* 1000 60)}}]
-  (as/mapcat< (fn [trades]
-                (map (fn [trade]
-                       (apply mk-trade ((juxt :price :volume :time) trade)))
-                     trades)) ;; trades returns a list of trades
-              (recursive-channel (fn [prev] (trades market-code :since (:last (meta prev))))
-                                 nil
-                                 :interval interval
-                                 :on-fail false)))
+
 
 
 ;; (def tc (trade-channel "LTC/EUR" :interval 5000))

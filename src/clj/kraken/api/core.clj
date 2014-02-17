@@ -1,29 +1,32 @@
 (ns kraken.api.core
   (:use [kraken.model]
-        [kraken.api.cryptsy]))
+        [kraken.api.cryptsy])
+  (:require [clojure.core.async :as as]))
 
 (system)
 
-;;; initial configuration of cryptsy:
-(swap! +system+ #(initialize-component
-                  (configure % [:exchanges :cryptsy] (read-string (slurp (str (System/getProperty "user.home") "/.cryptsy/config.edn"))))
-                  [:exchanges :cryptsy]))
+;;; external configuration of cryptsy:
+(swap! +system+ #(configure % [:exchanges :cryptsy] (read-string (slurp (str (System/getProperty "user.home") "/.cryptsy/config.edn")))))
+
+(swap! +system+ #(initialize (component % :system) %))
 (system)
 
-(def public-key (get-cfg (system) [:exchanges :cryptsy] :public-key))
-(def private-key (get-cfg (system) [:exchanges :cryptsy] :private-key))
-(def market-id (:id (first (filter #(= (:market-code %) "DOGE/BTC") (get-cfg (system) [:exchanges :cryptsy] :markets)))))
-(def exchange-time-zone (get-cfg (system) [:exchanges :cryptsy] :exchange-time-zone))
+(swap! +system+ #(start-component % :system))
 
-(market-trades public-key
-               private-key
-               market-id
-               exchange-time-zone)
+(as/take! (get-cfg (system) [:exchanges :cryptsy] :doge-trade-channel) (fn [v] (println "Got" v) (flush)))
 
-;;; => TODO:
-;;; - make functions to call endpoints without having to fetch keys etc (should go in cryptsy)
-;;; - provide channels in cryptsy component
+(swap! +system+ #(stop-component % :system))
+
+(swap! +system+ #(start-component % :system))
+;; All ok
+
+(swap! +system+ #(shutdown-component % :system))
+;; endless loop
+
+;;; TODO:
 ;;; - also make component for kraken
 ;;; - then see what next, maybe make exchanges component, 
 ;;; - make elastic component (should go in kraken.elastic...)
 ;;; - combine (in kraken.core)
+
+

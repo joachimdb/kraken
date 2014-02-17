@@ -58,19 +58,6 @@
                  market-ids))))
 ;; (orders "LTC/BTC")
 
-(defn order-book-channel [market-id & {:keys [interval]
-                                       :or {interval (* 1000 60)}}]
-  (as/filter< identity ;; filter out on-fails (false)
-              (polling-channel (fn []
-                                 (let [orders (get (orders market-id) market-id)]
-                                   (mk-order-book (map #(mk-order (:price %) (:quantity %))
-                                                       (:sell-orders orders))
-                                                  (map #(mk-order (:price %) (:volume %))
-                                                       (:buy-orders orders)))))
-                               :interval interval
-                               :on-fail false)))
-
-
 (defn market-data 
  "General Market Data
 
@@ -130,18 +117,6 @@
                       (:buy-orders market-data))))
 
 ;; (defn- ticks [market-data] ... )
-
-(defn- market-data-channel [market-label & {:keys [interval]
-                                            :or {interval (* 1000 60)}}]
-  (recursive-channel (fn [prev] 
-                       (get (market-data market-label) market-label))
-                     nil
-                     :interval interval
-                     :on-fail false))
-
-;; Market-data returns information that in kraken is spread over ticks, order-books and trades.
-;; Here we could provide a publication factory for publishing trades, ticks and order-books.
-;; In kraken we could provide a market-data channel that combines trades, ticks and order-books channels.
 
 ;; ;;; private api
 
@@ -211,27 +186,6 @@
          ret)))
 ;; (def markets (get-markets))
 
-(defn init-cryptsy [system id]
-  (let [public-key (get-cfg system id :public-key)
-        private-key (get-cfg system id :private-key)]
-    (if (and public-key private-key)
-      (let [info (get-info public-key private-key)
-            markets (get-markets public-key private-key)]
-        (set-cfg system id
-                 {:balances
-                  (deep-merge (zipmap (keys (remove #(zero? (val %)) (:available info)))
-                                      (map #(hash-map :unheld %)
-                                           (vals (remove #(zero? (val %)) (:available info)))))
-                              (zipmap (keys (remove #(zero? (val %)) (:held info)))
-                                      (map #(hash-map :held %)
-                                           (vals (remove #(zero? (val %)) (:held info))))))
-                  :last-updated (:info-time info)
-                  :exchange-time-zone (:server-time-zone info)
-                  :open-order-count (:open-order-count info)
-                  :markets markets}))
-      (throw (Exception. "Cannot initialize cryptsy: keys not specified in system")))))
-;; (init-cryptsy kraken.model/ts [:exchanges :cryptsy])
-
 (defn- my-transactions 
   "Method: mytransactions 
    
@@ -259,7 +213,7 @@
                     :time (tcoerce/from-long (* 1000 (get % "timestamp")))
                     :time-zone (get ret "timezone"))
          ret)))
-;; (my-transactions (get-cfg (system) [:exchanges :cryptsy] :public-key) (get-cfg (system) [:exchanges :cryptsy] :private-key))
+;; (my-transactions public-key private-key)
 
 (defn market-trades 
   "Method: markettrades 
@@ -274,7 +228,6 @@
    time	        time trade occurred
    price	The price the trade occurred at
    quantity	Quantity traded
-   total	Total value of trade (tradeprice * quantity)
    initial-order-type	The type of order which initiated this trade (\"Buy\"/\"Sell\")
 "   
   [public-key private-key market-id exchange-time-zone]
@@ -285,14 +238,9 @@
             :time (tcore/from-time-zone (tformat/parse (get trade "datetime"))
                                         (tcore/time-zone-for-id exchange-time-zone))
             :price (read-string (get trade "tradeprice"))
-            :quantity (get trade "quantity")})
+            :quantity (read-string (get trade "quantity"))})
          ret)
     ))
-
-;; (def public-key (get-cfg (system) [:exchanges :cryptsy] :public-key))
-;; (def private-key (get-cfg (system) [:exchanges :cryptsy] :private-key))
-;; (def market-id (:id (first (filter #(= (:market-code %) "DOGE/BTC") (get-cfg (system) [:exchanges :cryptsy] :markets)))))
-;; (def exchange-time-zone (get-cfg (system) [:exchanges :cryptsy] :exchange-time-zone))
 ;; (market-trades public-key
 ;;                private-key
 ;;                market-id
@@ -552,13 +500,82 @@
 ;;    Outputs: 
    
 ;;    address	The new generated address
-   
-   
+
+(defn trade-channel [public-key private-key market-id exchange-time-zone poll-interval control-channel error-channel]
+  (let [last-id (atom nil)]   
+    (as/map< #(apply mk-trade ((juxt :price :quantity :time) %))
+             (as/filter< (fn [trade] 
+                           (let [id (read-string (:id trade))]
+                             (when (or (nil? @last-id)
+                                       (> id @last-id))
+                               (reset! last-id id))))
+                         (as/mapcat< identity
+                                     (rec-channel (fn [_] (market-trades public-key private-key market-id exchange-time-zone))
+                                                  nil
+                                                  poll-interval
+                                                  control-channel
+                                                  error-channel))))))
+;; (def poll-interval 5000)
+;; (def control-channel (as/chan))
+;; (def error-channel (as/chan))
+;; (def tc (trade-channel (system) "DOGE/BTC" 5000 control-channel error-channel))
+;; (as/>!! control-channel :start)
+;; (as/take! tc (fn [v] (println "Got " v) (flush)))
+;; (def t (as/<!! tc))
+;; (as/>!! control-channel :close)
+
+;; (as/take! error (fn [v] (println "Error " v) (flush)))
+
+
+(defn- market-id [markets market-code] (:id (first (filter #(= (:market-code %) market-code) markets))))
+
+(defn init-cryptsy [system id]
+  (let [public-key (get-cfg system id :public-key)
+        private-key (get-cfg system id :private-key)]
+    (if (and public-key private-key)
+      (let [info (get-info public-key private-key)
+            markets (get-markets public-key private-key)
+            balances (deep-merge (zipmap (keys (remove #(zero? (val %)) (:available info)))
+                                         (map #(hash-map :unheld %)
+                                              (vals (remove #(zero? (val %)) (:available info)))))
+                                 (zipmap (keys (remove #(zero? (val %)) (:held info)))
+                                         (map #(hash-map :held %)
+                                              (vals (remove #(zero? (val %)) (:held info))))))
+            exchange-time-zone (:server-time-zone info)
+            control-channel (as/chan)
+            error-channel (system-error-channel system)]
+        (set-cfg system id
+                 {:balances balances
+                  :last-updated (:info-time info)
+                  :exchange-time-zone exchange-time-zone
+                  :open-order-count (:open-order-count info)
+                  :markets markets
+                  :control-channel control-channel
+                  :doge-trade-channel (trade-channel public-key private-key (market-id markets "DOGE/BTC") exchange-time-zone 5000 control-channel error-channel)})) 
+      (throw (Exception. "Cannot initialize cryptsy: keys not specified in system")))))
+
+
+(defn start-cryptsy [system id]
+  (as/go (as/>! (get-cfg system id :control-channel) :start))
+  system)
+
+(defn stop-cryptsy [system id]
+  (as/go (as/>! (get-cfg system id :control-channel) :stop))
+  system)
+
+(defn shutdown-cryptsy [system id]
+  (as/go (as/>! (get-cfg system id :control-channel) :close))
+  (as/close! (get-cfg system id :control-channel))
+  system)
 
 (defcomponent [:exchanges :cryptsy] []
   ;; Requires  public and private-keys
   :init init-cryptsy  
-  ;; TODO: start/stop channels for updating state and polling market
-  )
+  :start start-cryptsy
+  :stop stop-cryptsy
+  :shutdown shutdown-cryptsy)
+
+
+
 
 ;; (system)
