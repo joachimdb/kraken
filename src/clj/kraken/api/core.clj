@@ -8,24 +8,49 @@
 ;;; external configuration of cryptsy:
 (swap! +system+ #(configure % [:exchanges :cryptsy] (read-string (slurp (str (System/getProperty "user.home") "/.cryptsy/config.edn")))))
 
-;;; Doesn't work because this first tries to initialize dependent components but error and log channel are not yet in place
-;;; (swap! +system+ #(initialize-component % :system))
+(swap! +system+ #(initialize (component % :system) %))
+(swap! +system+ #(shutdown (component % :system) %))
+(swap! +system+ #(start (component % :system) %))
+
+(shutdown (component @+system+ :system) @+system+)
+
+
+(switch-context @+system+ :system :up)
+(def s (switch-context @+system+ :system :up))
+(reset! +system+ s)
+
+(swap! +system+ (switch-context % :system :up))
+
+
+(def s (initialize (component @+system+ :system) @+system+))
+(reset! +system+ s)
 
 (swap! +system+ #(initialize (component % :system) %))
+
+(component @+system+ :system)
+
+(def s (shutdown (component @+system+ :system) @+system+))
+(reset! +system+ s)
+
+(def s (switch-context @+system+ :system :down))
+
 (swap! +system+ #(shutdown (component % :system) %))
 ;; OK
 
+(def s (initialize (component @+system+ :system) @+system+))
+(reset! +system+ s)
+
 (swap! +system+ #(initialize (component % :system) %))
+
+(def s (stop (component @+system+ :system) @+system+))
+(reset! +system+ s)
+
 (swap! +system+ #(stop (component % :system) %))
 ;; OK
 
-@+system+
-(initialize (component @+system+ :system) @+system+)
 (swap! +system+ #(initialize (component % :system) %))
-;; => exception: system not initialized
-;; Reason: initialize sets error and log channels, then calls initialize-component on :system which is in status :stopped, this will first call shutdown, which will again close and remove log and error channels
 
-;; => what if in init/start/stop/shutdown fn of system component we handle dependencies directly instead of going through initialize etc?
+(swap! +system+ #(start (component % :system) %))
 
 
 (system)

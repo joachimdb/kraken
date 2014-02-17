@@ -543,7 +543,7 @@
                                               (vals (remove #(zero? (val %)) (:held info))))))
             exchange-time-zone (:server-time-zone info)
             control-channel (as/chan)
-            error-channel (system-error-channel system)]
+            error-channel (system-log-channel system)]
         (set-cfg system id
                  {:balances balances
                   :last-updated (:info-time info)

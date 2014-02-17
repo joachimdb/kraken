@@ -15,7 +15,8 @@
                  [compojure "1.1.6"]
                  [org.clojure/clojurescript "0.0-2069"]
                  [clojurewerkz/elastisch "1.1.1"]
-                 [http-kit "2.1.13"]]
+                 [http-kit "2.1.13"]
+                 [com.taoensso/timbre "3.0.1"]]
   :ring {:handler kraken.core/handler}
   :source-paths ["src/clj/kraken" "src/clj" "src/cljs"]
   :plugins [[lein-cljsbuild "1.0.0"]
