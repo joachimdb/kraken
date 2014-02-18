@@ -1,6 +1,8 @@
 (ns kraken.core
-  (:use [kraken.model]
-        ;[kraken.api.core]
+  (:use [kraken.system]
+        [kraken.elastic]
+        [kraken.model]
+        [kraken.api.core]
         [compojure.core]
         [ring.util.serve]) 
   (:require [clj-time.format :as tformat]
@@ -11,6 +13,31 @@
             [kraken.channels :as ch]
             ; [kraken.api.public :as pub]
             [clojure.core.async :as as]))
+
+(system)
+
+;;; external configuration of cryptsy:
+(configure! :cryptsy (read-string (slurp (str (System/getProperty "user.home") "/.kraken/cryptsy/config.edn"))))
+(configure! :elastic (read-string (slurp (str (System/getProperty "user.home") "/.kraken/elastic/config.edn"))))
+(system)
+
+(initialize!)
+(shutdown!)
+(start!)
+(stop!)
+
+;;; TODO: 
+;;; - make full reset work and call it automatically when call on failed system
+;;; - figure out why shutdown throws exception (prob bec tries to call protocol method on non-existant instance)
+;;; - make fresh components in full-reset
+;;; - also make component for kraken
+;;; - then see what next, maybe make exchanges component, 
+;;; - make elastic component (should go in kraken.elastic...)
+;;; - combine (in kraken.core)
+
+
+
+
 
 ;; "controler" => actual call to first initialize / start in the chain...
 

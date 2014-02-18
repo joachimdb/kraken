@@ -1,5 +1,6 @@
 (ns kraken.api.cryptsy
-  (:use [kraken.model]
+  (:use [kraken.system]
+        [kraken.model]
         [kraken.channels]
         [pandect.core])
   (:require [clojure.core.async :as as]
@@ -359,7 +360,12 @@
      :buy-orders (map #(hash-map :price (read-string (first %))
                                  :quantity (read-string (second %)))
                       (get ret "buy"))}))
-;; (depth public-key private-key market-id)
+;; (def public-key (get-cfg (system) :cryptsy :public-key))
+;; (def private-key (get-cfg (system) :cryptsy :private-key))
+;; (def d (depth public-key
+;;               private-key
+;;               (market-id (get-cfg (system) :cryptsy :markets) "DOGE/BTC")))
+;; (first (:buy-orders d))
 
 (defn create-order
   "Method: createorder 
@@ -526,6 +532,12 @@
 
 ;; (as/take! error (fn [v] (println "Error " v) (flush)))
 
+(defn depth-channel [public-key private-key market-id poll-interval control-channel error-channel]
+  (rec-channel (fn [_] (depth public-key private-key market-id))
+                 nil
+                 poll-interval
+                 control-channel
+                 error-channel))
 
 (defn- market-id [markets market-code] (:id (first (filter #(= (:market-code %) market-code) markets))))
 
@@ -543,7 +555,12 @@
                                               (vals (remove #(zero? (val %)) (:held info))))))
             exchange-time-zone (:server-time-zone info)
             control-channel (as/chan)
+            control (as/mult control-channel)
+            doge-trade-control-channel (as/chan 1)
+            doge-depth-control-channel (as/chan 1)
             error-channel (system-log-channel system)]
+        (as/tap control doge-trade-control-channel)
+        (as/tap control doge-depth-control-channel)
         (set-cfg system id
                  {:balances balances
                   :last-updated (:info-time info)
@@ -551,7 +568,8 @@
                   :open-order-count (:open-order-count info)
                   :markets markets
                   :control-channel control-channel
-                  :doge-trade-channel (trade-channel public-key private-key (market-id markets "DOGE/BTC") exchange-time-zone 5000 control-channel error-channel)})) 
+                  :doge-trade-channel (trade-channel public-key private-key (market-id markets "DOGE/BTC") exchange-time-zone 10000 doge-trade-control-channel error-channel)
+                  :doge-depth-channel (depth-channel public-key private-key (market-id markets "DOGE/BTC") 60000 doge-depth-control-channel error-channel)})) 
       (throw (Exception. "Cannot initialize cryptsy: keys not specified in system")))))
 
 
@@ -568,14 +586,17 @@
   (as/close! (get-cfg system id :control-channel))
   system)
 
-(defcomponent [:exchanges :cryptsy] []
-  ;; Requires  public and private-keys
-  :init init-cryptsy  
-  :start start-cryptsy
-  :stop stop-cryptsy
-  :shutdown shutdown-cryptsy)
+(defcomponent :cryptsy []  
+  ComponentP 
+  (initialize [this system] (init-cryptsy system :cryptsy))
+  (start [this system] (start-cryptsy system :cryptsy))
+  (stop [this system] (stop-cryptsy system :cryptsy))
+  (shutdown [this system] (shutdown-cryptsy system :cryptsy)))
 
 
 
 
 ;; (system)
+
+
+
