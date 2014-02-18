@@ -97,7 +97,8 @@
                           :level level
                           :msg msg
                           :time (tcore/now)})
-    (throw (Exception. "Log failed: System not initialized"))))
+    (do (timbre/warn "Log failed: System not properly initialized?")
+        (timbre/log level msg))))
 (defn info [system component-id msg]
   (log system component-id :info msg))
 (defn error [system component-id exception msg]
@@ -143,48 +144,58 @@
 
 (defn target-context [target]
   (get-in @targets [target :context]))
+
 (defn target-component-handler [target]
   (get-in @targets [target :component-handler]))
 
 (declare switch-context)
 
-(defn handle-dependencies [system component-id target-status]
-  (let [dependencies (dependencies system component-id)
-        system (reduce #(switch-context %1 %2 target-status) system dependencies)]
-    (if (and (not (failed? system component-id))
-             (every? #(= (status system %) target-status) dependencies))
-      (set-status system component-id target-status)
-      (set-status system component-id :failed))))
+(defn switch-dependencies 
+  ([system component-id target-status] (switch-dependencies system component-id target-status #{}))
+  ([system component-id target-status skip-components]
+     (let [dependencies (dependencies system component-id)
+           system (reduce #(switch-context %1 %2 target-status) system (remove skip-components dependencies))]
+       (if (and (not (failed? system component-id))
+                (every? #(= (status system %) target-status) dependencies))
+         (set-status system component-id target-status)
+         (set-status system component-id :failed)))))
 
-(defn switch-context [system component-id target]
-  (cond (= (status system component-id) :failed)
-        (throw (Exception. "Cannot switch from failed context"))
-        (= (status system component-id) target) ;; nothing to do
-        system
-        ((target-context target) (status system component-id)) ;; can call handler in current context 
-        (handle-dependencies (try ((target-component-handler target) (component system component-id) system)
-                                  (catch Exception e
-                                    (error system component-id e (str "System " (vec (flatten [component-id])) " - [" (status system get-in system component-id) " => " target "]"))
-                                    (set-status system component-id :failed)))
-                             component-id
-                             target)
-        :else ;; not a valid context, try calling a handler that achieves one and recur
-        (loop [subtargets (target-context target)
-               system system]
-          (if (empty? subtargets)
-            system ;; failed to switch context
-            (let [new-system (switch-context system component-id (first subtargets))]
-              (if (= (first subtargets) (status new-system component-id))
-                (switch-context new-system component-id target)
-                (recur (rest subtargets) new-system)))))))
+(defn switch-component [system component-id target]
+  (try ((target-component-handler target) (component system component-id) system)
+       (catch Exception e
+         (error system component-id e (str "System " (vec (flatten [component-id])) " - [" (status system get-in system component-id) " => " target "]"))
+         (set-status system component-id :failed))))
+
+(defn switch-context 
+  ([system component-id target] (switch-context system component-id target #{} #{}))
+  ([system component-id target skip-components skip-targets]
+     (cond (= (status system component-id) :failed)
+           (throw (Exception. "Cannot switch from failed context"))
+           (= (status system component-id) target) ;; nothing to do
+           system
+           ((target-context target) (status system component-id)) ;; can call handler in current context 
+           (switch-dependencies (if (skip-components component-id)
+                                  system
+                                  (switch-component system component-id target))
+                                component-id
+                                target
+                                (conj skip-components component-id))
+           :else ;; not a valid context, try calling a handler that achieves one and recur
+           (loop [subtargets (remove skip-targets (target-context target))
+                  system system]
+             (if (empty? subtargets)
+               system ;; failed to switch context
+               (let [new-system (switch-context system component-id (first subtargets) skip-components (conj skip-targets target))]
+                 (if (= (first subtargets) (status new-system component-id))
+                   (switch-context new-system component-id target skip-components skip-targets)
+                   (recur (rest subtargets) new-system))))))))
 
 (defmacro deftarget [target & {:keys [context component-handler]
                                :as keys}]
   `(swap! targets assoc ~target ~keys))
 
-
 (deftarget :stopped
-  :context #{:running :up}
+  :context #{:running}
   :component-handler stop)
 (deftarget :down 
   :context #{:stopped :up}
@@ -195,16 +206,6 @@
 (deftarget :running
   :context #{:up :stopped}
   :component-handler start)
-
-(defn stop-system [system id]
-  (assert (= :system id))
-  (log system id :info "Stopping main system")
-  (handle-dependencies system id :stopped))
-
-(defn start-system [system id]
-  (assert (= :system id))
-  (log system id :info "Starting main system")
-  (handle-dependencies system id :running))
 
 (defn init-system [system id]
   (assert (= :system id))
@@ -217,14 +218,31 @@
               (timbre/log (:level m) (:msg m)))
             (recur))
         (as/close! log-channel)))
-    (log system id :info "Initializing main system")
-    (handle-dependencies system id :up)))
+    (timbre/info "Initializing main system")
+    (switch-context system id :up #{:system}  #{})))
+
+(defn stop-system [system id]
+  (assert (= :system id))
+  (timbre/info "Stopping main system") ;; can't use info at this level (system may not be initialized)
+  (switch-context (if (down? system id)
+                    (init-system system id)
+                    system)
+                  id :stopped #{:system} #{}))
+
+(defn start-system [system id]
+  (assert (= :system id))
+  (timbre/info "Starting main system")
+  (switch-context (if (down? system id)
+                    (init-system system id)
+                    system)
+                  id :running #{:system}  #{}))
 
 (defn shutdown-system [system id]
   (assert (= :system id))
-  (log system id :info "Shutting down main system")
-  (let [system (handle-dependencies system id :down)]
-    (as/close! (system-log-channel system))
+  (timbre/info "Shutting down main system")
+  (let [system (switch-context system id :down #{:system} #{})]
+    (when-let [log-chan (system-log-channel system)]
+      (as/close! log-chan))
     (set-system-log-channel system nil)))
 
 (defcomponent :system []
@@ -233,3 +251,31 @@
   :stop stop-system
   :shutdown shutdown-system)
 
+(defn configure! [component-id cfg]
+  (swap! +system+ #(configure % component-id cfg)))
+(defn initialize!
+  ([] (initialize! :system))
+  ([component-id]
+     (swap! +system+ #(initialize (component % :system) %))))
+(defn start!
+  ([] (start! :system))
+  ([component-id]
+     (swap! +system+ #(start (component % :system) %))))
+(defn stop! 
+  ([] (stop! :system))
+  ([component-id]
+     (swap! +system+ #(stop (component % :system) %))))
+(defn shutdown! 
+  ([] (shutdown! :system))
+  ([component-id]
+     (swap! +system+ #(shutdown (component % component-id) %))))
+(defn full-reset! []
+  (shutdown!)
+  (reset! +system+ {})
+  (defcomponent :system []
+    :init init-system
+    :start start-system
+    :stop stop-system
+    :shutdown shutdown-system))
+;; (swap! +system+ #(start (component % :system) %))
+;; (handle-dependencies +system+ :system :running)
