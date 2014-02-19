@@ -99,7 +99,10 @@
 (defn mk-component
   ([id] (mk-component @+system+ id))
   ([system id]
-     ((get-in system (flatten [:components id :factory])))))
+     (if-let [factory (get-in system (flatten [:components id :factory]))]
+       (do (timbre/info "Making component" (vec (flatten [id])))
+           (factory)))
+     (throw (Exception. (str "No factory found for component " (vec (flatten [id])) ". System not properly initialized?")))))
 
 (def targets (atom {}))
 
@@ -301,7 +304,6 @@
 
 (defn hard-reset! []
   (shutdown!)
-  (reset! +system+ {})
   (swap! +system+ deep-merge
          {:components 
           (apply hash-map
@@ -312,3 +314,4 @@
                                 [id {:instance (mk-component id)
                                      :status :down}]))
                             (dependency-seq @+system+))))}))
+

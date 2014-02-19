@@ -107,15 +107,15 @@
                              ["return" "markets"]))))
                  market-ids))))
 
-(defn- trades [market-data]
-  (map #(apply mk-trade ((juxt :prive :quantity :time) %))
-       (:recent-trades market-data)))
+;; (defn- trades [market-data]
+;;   (map #(apply mk-trade ((juxt :prive :quantity :time) %))
+;;        (:recent-trades market-data)))
 
-(defn- order-book [market-data]
-  (mk-order-book (map #(mk-order (:price %) (:quantity %))
-                      (:sell-orders market-data))
-                 (map #(mk-order (:price %) (:volume %))
-                      (:buy-orders market-data))))
+;; (defn- order-book [market-data]
+;;   (mk-order-book (map #(mk-order (:price %) (:quantity %))
+;;                       (:sell-orders market-data))
+;;                  (map #(mk-order (:price %) (:volume %))
+;;                       (:buy-orders market-data))))
 
 ;; (defn- ticks [market-data] ... )
 
@@ -507,20 +507,42 @@
    
 ;;    address	The new generated address
 
-(defn trade-channel [public-key private-key market-id exchange-time-zone poll-interval control-channel error-channel]
+(defn trade-channel* [public-key private-key market-id exchange-time-zone poll-interval control-channel error-channel]
   (let [last-id (atom nil)]   
-    (as/map< #(apply mk-trade ((juxt :price :quantity :time) %))
-             (as/filter< (fn [trade] 
-                           (let [id (read-string (:id trade))]
-                             (when (or (nil? @last-id)
-                                       (> id @last-id))
-                               (reset! last-id id))))
-                         (as/mapcat< identity
-                                     (rec-channel (fn [_] (market-trades public-key private-key market-id exchange-time-zone))
-                                                  nil
-                                                  poll-interval
-                                                  control-channel
-                                                  error-channel))))))
+    (as/filter< (fn [trade] 
+                  (let [id (read-string (:id trade))]
+                    (when (or (nil? @last-id)
+                              (> id @last-id))
+                      (reset! last-id id))))
+                (as/mapcat< identity
+                            (rec-channel (fn [_] (market-trades public-key private-key market-id exchange-time-zone))
+                                         nil
+                                         poll-interval
+                                         control-channel
+                                         error-channel)))))
+
+(defn- market-id [markets market-code] (:id (first (filter #(= (:market-code %) market-code) markets))))
+
+(defn start-trade-channel! [system component-id market-code]
+  (let [control-channel (as/chan 1)]
+    (as/tap (get-cfg system component-id :control) control-channel)
+    (set-cfg system 
+             component-id 
+             {:trade-channels 
+              {market-code 
+               (as/map< #(apply mk-trade "cryptsy" market-code ((juxt :price :quantity :time) %))
+                        (trade-channel* 
+                         (get-cfg system component-id :public-key) 
+                         (get-cfg system component-id :private-key)
+                         (market-id (get-cfg system component-id :markets) market-code) 
+                         (get-cfg system component-id :exchange-time-zone)
+                         (get-cfg system component-id :poll-interval)
+                         control-channel 
+                         (system-log-channel system)))}})))
+
+(defn trade-channels [system component-id]
+  (get-cfg system component-id :trade-channels))
+
 ;; (def poll-interval 5000)
 ;; (def control-channel (as/chan))
 ;; (def error-channel (as/chan))
@@ -532,19 +554,18 @@
 
 ;; (as/take! error (fn [v] (println "Error " v) (flush)))
 
-(defn depth-channel [public-key private-key market-id poll-interval control-channel error-channel]
-  (rec-channel (fn [_] (depth public-key private-key market-id))
-                 nil
-                 poll-interval
-                 control-channel
-                 error-channel))
-
-(defn- market-id [markets market-code] (:id (first (filter #(= (:market-code %) market-code) markets))))
+;; (defn depth-channel [public-key private-key market-id poll-interval control-channel error-channel]
+;;   (rec-channel (fn [_] (depth public-key private-key market-id))
+;;                  nil
+;;                  poll-interval
+;;                  control-channel
+;;                  error-channel))
 
 (defn init-cryptsy [system id]
   (let [public-key (get-cfg system id :public-key)
-        private-key (get-cfg system id :private-key)]
-    (if (and public-key private-key)
+        private-key (get-cfg system id :private-key)
+        poll-interval (get-cfg system id :poll-interval)]
+    (if (and public-key private-key poll-interval)
       (let [info (get-info public-key private-key)
             markets (get-markets public-key private-key)
             balances (deep-merge (zipmap (keys (remove #(zero? (val %)) (:available info)))
@@ -553,25 +574,18 @@
                                  (zipmap (keys (remove #(zero? (val %)) (:held info)))
                                          (map #(hash-map :held %)
                                               (vals (remove #(zero? (val %)) (:held info))))))
-            exchange-time-zone (:server-time-zone info)
-            control-channel (as/chan)
-            control (as/mult control-channel)
-            doge-trade-control-channel (as/chan 1)
-            doge-depth-control-channel (as/chan 1)
-            error-channel (system-log-channel system)]
-        (as/tap control doge-trade-control-channel)
-        (as/tap control doge-depth-control-channel)
-        (set-cfg system id
-                 {:balances balances
-                  :last-updated (:info-time info)
-                  :exchange-time-zone exchange-time-zone
-                  :open-order-count (:open-order-count info)
-                  :markets markets
-                  :control-channel control-channel
-                  :doge-trade-channel (trade-channel public-key private-key (market-id markets "DOGE/BTC") exchange-time-zone 10000 doge-trade-control-channel error-channel)
-                  :doge-depth-channel (depth-channel public-key private-key (market-id markets "DOGE/BTC") 60000 doge-depth-control-channel error-channel)})) 
+            control-channel (as/chan)]
+        (-> system 
+            (set-cfg id {:balances balances
+                         :last-updated (:info-time info)
+                         :exchange-time-zone (:server-time-zone info)
+                         :open-order-count (:open-order-count info)
+                         :markets markets
+                         :control-channel control-channel
+                         :control (as/mult control-channel)
+                         :poll-interval poll-interval})
+            (start-trade-channel! id "DOGE/BTC")))
       (throw (Exception. "Cannot initialize cryptsy: keys not specified in system")))))
-
 
 (defn start-cryptsy [system id]
   (as/go (as/>! (get-cfg system id :control-channel) :start))

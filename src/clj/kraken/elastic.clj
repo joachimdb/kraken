@@ -10,8 +10,10 @@
             [clj-time.format :as tformat]
             [clj-time.coerce :as tcoerce]
             [clojure.core.async :as as]))
-(def id :elastic)
-(def conn (get-cfg (system) id :connection))
+
+
+;; (get-cfg (system) :elastic))
+
 (defn connect [system id]
   (let [conn (get-cfg system id :connection)]
     (if (= :rest (:type conn))
@@ -45,34 +47,53 @@
 ;;; - To solve this, we define an Item protocol. 
 ;;; - Afterwards: Take care of configuration how indexes are created
 
-(defprotocol DocumentP
-  (index [this])
-  (mapping-type [this])
-  (document [this]))
+(defmulti querify (fn [x] (type x)))
+(defmethod querify :default [x] 
+  (if (coll? x) 
+    (reduce conj (empty x) (map querify x))
+    x))
+(defmethod querify org.joda.time.DateTime [x]
+  (tcoerce/to-long x))
+(defmethod querify clojure.lang.MapEntry [x]
+  [(querify (key x)) (querify (val x))])
 
 (defn- index-document! [system d]
   (with-system-connection [sc system]
-    (esd/create (index d) (mapping-type d) (document d)))
+    (esd/create (index d system) (mapping-type d system) 
+                (querify (document d system))))
   system)
 
 (defn index! [system d]
   (if (satisfies? DocumentP d)
     (index-document! system d)
-    (error system :elastic (str d " does not satisfy the RecordP protocol."))))
+    (error system :elastic (str d " does not satisfy the Document protocol."))))
 
-(defn create-index! [system index]
+(defn create-index! [system idx]
   (with-system-connection [sc system]
-    (when-not (esi/exists? index)
-      (esi/create index 
+    (when-not (esi/exists? idx)
+      (info system :elastic (str "Create index " idx ", settings " (get-cfg system :elastic :index-settings) ", mappings " (get-cfg system :elastic :mappings)))
+      (esi/create idx
                   :settings (get-cfg system :elastic :index-settings)
                   :mappings (get-cfg system :elastic :mappings))))
   system)
 
-(configure! :elastic {:index-settings {"number_of_shards" 1 "number_of_replicas" "1"}})
-(configure :elastic {:mappings })
-(configuration :elastic)
-(create-index! system )
+;; (def idx (index (mk-trade "cryptsy" "DOGE/BTC" 0 0 0) (system)))
+;; (create-index! (system) idx)
+;; (get-cfg (system) :elastic)
+;; (esd/count idx :trade)
 
+;; 
+;; (with-system-connection [sc (system)]
+;;   (when-not (esi/exists? idx)
+;;     (esi/create "test/123"
+;;                 ;; idx
+;;                 ;; :settings {"number_of_shards" 1, "number_of_replicas" "1"}
+;;                 ;; :mappings {:trade
+;;                 ;;            {:properties
+;;                 ;;             {:price {:type "double"},
+;;                 ;;              :volume {:type "double"},
+;;                 ;;              :time {:type "date"}}}}
+;;                 )))
 
 ;; ;;; I. General helper functions (connect/create/delete/scroll idx ..._)
 ;; ;;; ===================================================================

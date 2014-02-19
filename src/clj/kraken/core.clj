@@ -1,6 +1,7 @@
 (ns kraken.core
   (:use [kraken.system]
         [kraken.elastic]
+        [kraken.api.cryptsy]
         [kraken.model]
         ; [kraken.api.core]
         [compojure.core]
@@ -14,17 +15,23 @@
             ; [kraken.api.public :as pub]
             [clojure.core.async :as as]))
 
+;; (hard-reset!)
 (system)
-
 (initialize!)
-(shutdown!)
+
+;; TODO: the following worked, but I didn't notice anything
+(create-index! (system) (index (mk-trade "cryptsy" "DOGE/BTC" 0 0 0) (system)))
+
 (start!)
+
+(def t (as/<!! (get-cfg (system) :cryptsy :trade-channels "DOGE/BTC")))
+
+(index! (system) t)
+
 (stop!)
 
 ;;; TODO: 
-;;; - make full reset work and call it automatically when call on failed system
-;;; - figure out why shutdown throws exception (prob bec tries to call protocol method on non-existant instance)
-;;; - make fresh components in full-reset
+;;; - install channel in elastic component accepting documents
 ;;; - also make component for kraken
 ;;; - then see what next, maybe make exchanges component, 
 ;;; - make elastic component (should go in kraken.elastic...)
