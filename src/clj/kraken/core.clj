@@ -2,7 +2,7 @@
   (:use [kraken.system]
         [kraken.elastic]
         [kraken.model]
-        [kraken.api.core]
+        ; [kraken.api.core]
         [compojure.core]
         [ring.util.serve]) 
   (:require [clj-time.format :as tformat]
@@ -14,11 +14,6 @@
             ; [kraken.api.public :as pub]
             [clojure.core.async :as as]))
 
-(system)
-
-;;; external configuration of cryptsy:
-(configure! :cryptsy (read-string (slurp (str (System/getProperty "user.home") "/.kraken/cryptsy/config.edn"))))
-(configure! :elastic (read-string (slurp (str (System/getProperty "user.home") "/.kraken/elastic/config.edn"))))
 (system)
 
 (initialize!)

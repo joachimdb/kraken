@@ -588,6 +588,7 @@
 
 (defcomponent :cryptsy []  
   ComponentP 
+  (initial-config [this] (read-string (slurp (str (System/getProperty "user.home") "/.kraken/cryptsy/config.edn"))))
   (initialize [this system] (init-cryptsy system :cryptsy))
   (start [this system] (start-cryptsy system :cryptsy))
   (stop [this system] (stop-cryptsy system :cryptsy))

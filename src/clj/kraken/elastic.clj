@@ -20,12 +20,59 @@
       (throw (Exception. (str "Unknown connection type " (:type conn)))))))
 ;; (connect @+system+ :elastic)
 
+(defmacro with-connection [[c con] & body]
+  `(binding [esr/*endpoint* ~con]
+     ~@body))
+
+(defn system-connection [system]
+  (get-cfg system :elastic :connection :instance))
+
+(defmacro with-system-connection [[sc system] & body]
+  `(with-connection [sc (system-connection ~system)]
+     ~@body))
+
 (defcomponent :elastic []  
   ComponentP 
+  (initial-config [this] (read-string (slurp (str (System/getProperty "user.home") "/.kraken/elastic/config.edn"))))
   (initialize [this system] (connect system :elastic))
   (start [this system] system)
   (stop [this system] system)
   (shutdown [this system] system))
+
+;;; TODO
+;;; - just like cryptsy pushes things onto a channel, so should the elastic component accept things on a channel
+;;; - there is a problem that we don't know what index and mapping to use
+;;; - To solve this, we define an Item protocol. 
+;;; - Afterwards: Take care of configuration how indexes are created
+
+(defprotocol DocumentP
+  (index [this])
+  (mapping-type [this])
+  (document [this]))
+
+(defn- index-document! [system d]
+  (with-system-connection [sc system]
+    (esd/create (index d) (mapping-type d) (document d)))
+  system)
+
+(defn index! [system d]
+  (if (satisfies? DocumentP d)
+    (index-document! system d)
+    (error system :elastic (str d " does not satisfy the RecordP protocol."))))
+
+(defn create-index! [system index]
+  (with-system-connection [sc system]
+    (when-not (esi/exists? index)
+      (esi/create index 
+                  :settings (get-cfg system :elastic :index-settings)
+                  :mappings (get-cfg system :elastic :mappings))))
+  system)
+
+(configure! :elastic {:index-settings {"number_of_shards" 1 "number_of_replicas" "1"}})
+(configure :elastic {:mappings })
+(configuration :elastic)
+(create-index! system )
+
 
 ;; ;;; I. General helper functions (connect/create/delete/scroll idx ..._)
 ;; ;;; ===================================================================
