@@ -2,6 +2,7 @@
   (:use [kraken.system]
         [kraken.model]
         [kraken.channels]
+        [kraken.elastic]
         [pandect.core])
   (:require [clojure.core.async :as as]
             [clj-time.core :as tcore]
@@ -333,8 +334,8 @@
      :net (read-string (get ret "net"))}))
 ;; (calculate-fees public-key private-key "Sell" 50000 0.00000300)
 
-(defn- trade-channel* [public-key private-key market-id exchange-time-zone poll-interval control-channel error-channel]
-  (let [last-id (atom nil)]   
+(defn- trade-channel* [public-key private-key market-id exchange-time-zone poll-interval last-trade-id control-channel error-channel]
+  (let [last-id (atom (when last-trade-id (read-string last-trade-id)))]   
     (as/filter< (fn [trade] 
                   (let [id (read-string (:id trade))]
                     (when (or (nil? @last-id)
@@ -347,6 +348,13 @@
                                          control-channel
                                          error-channel)))))
 
+(defn- last-trade-id [system exchange-code market-code]
+  (try (:id (first (trades system exchange-code
+                           :query {:term {:market-code market-code}}
+                           :sort {:time {:order "desc"}}
+                           :size 1)))
+       (catch Exception e nil)))
+
 (defn- market-id [markets market-code] (:id (first (filter #(= (:market-code %) market-code) markets))))
 
 (defn- start-trade-channel! [system component-id market-code]
@@ -356,15 +364,22 @@
              component-id 
              {:trade-channels 
               {market-code 
-               (as/map< #(apply mk-trade "cryptsy" market-code ((juxt :price :quantity :time) %))
+               (as/map< #(apply mk-trade "cryptsy" market-code ((juxt :price :quantity :time :id) %))
                         (trade-channel* 
                          (get-cfg system component-id :public-key) 
                          (get-cfg system component-id :private-key)
                          (market-id (get-cfg system component-id :markets) market-code) 
                          (get-cfg system component-id :exchange-time-zone)
                          (get-cfg system component-id :poll-interval)
+                         (last-trade-id system "cryptsy" market-code)
                          control-channel 
-                         (system-log-channel system)))}})))
+                         (as/map> (fn [e]
+                                    :source component-id
+                                    :level :error
+                                    :msg (str "System " (vec (flatten [component-id])) " - " e)
+                                    :exception e
+                                    :time (tcore/now))
+                                  (system-log-channel system))))}})))
 
 (defn trade-channels [system component-id]
   (get-cfg system component-id :trade-channels))
@@ -386,6 +401,7 @@
 ;;                  poll-interval
 ;;                  control-channel
 ;;                  error-channel))
+
 
 (defn- cryptsy-initial-config [info markets]
   {:balances (deep-merge (zipmap (keys (remove #(zero? (val %)) (:available info)))
@@ -429,7 +445,7 @@
   (as/close! (get-cfg system id :control-channel))
   system)
 
-(defcomponent :cryptsy []  
+(defcomponent :cryptsy [:elastic]  
   ComponentP 
   (initial-config [this] (read-string (slurp (str (System/getProperty "user.home") "/.kraken/cryptsy/config.edn"))))
   (initialize [this system] (init-cryptsy system :cryptsy))

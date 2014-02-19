@@ -10,23 +10,18 @@
              status :stop
              [control c] (as/alts! [control-channel (as/timeout interval)])]
         (cond (= c control-channel)
-              (do (println "Received control " control) (flush)
-                  (recur x control [nil nil]))
+              (recur x control [nil nil])
               (= status :close)
               (as/close! out)
               (= status :start)
               (let [next (try (f x)
                               (catch Exception e e))] 
                 (if-not (isa? (type next) java.lang.Exception)
-                  (do (println "Sending") (flush)
-                      (as/>! out next)
+                  (do (as/>! out next)
                       (recur next status (as/alts! [control-channel (as/timeout interval)])))
-                  (do (println "got error")
-                      (as/>! error-channel next)
+                  (do (as/>! error-channel next)
                       (recur x status (as/alts! [control-channel (as/timeout interval)])))))
-              :else (let [_ (do (println "case else") (flush))
-                          control (as/<! control-channel)]
-                      (println "Got control" control)
+              :else (let [control (as/<! control-channel)]
                       (recur x (or control :close) [nil nil])))))
     out))
 

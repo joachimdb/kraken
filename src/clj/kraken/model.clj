@@ -24,14 +24,15 @@
                   ^java.lang.Double volume
                   ^org.joda.time.DateTime time
                   ^java.lang.String market-code
-                  ^java.lang.String exchange-code]
+                  ^java.lang.String exchange-code
+                  ^java.lang.String id]
   DocumentP
   (index [this system] (index-name system exchange-code))
-  (mapping-type [this system] :trade)
+  (mapping-type [this system] "trade")
   (document [this system]
-    (select-keys this [:market-code :price :volume :time])))
+    (select-keys this [:market-code :price :volume :time :id])))
 
-(defn mk-trade [exchange-code market-code price volume time]
-  (Trade. price volume time market-code exchange-code))
+(defn mk-trade [exchange-code market-code price volume time id]
+  (Trade. price volume time market-code exchange-code id))
 
 

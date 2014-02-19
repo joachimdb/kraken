@@ -1,5 +1,6 @@
 (ns kraken.ml.vw
   (:use [kraken.model]
+        [kraken.system]
         [kraken.elastic])
   (:require [clj-time.core :as tcore]
             [clj-time.format :as tformat]
@@ -82,15 +83,20 @@
   (.println (:out vw-connection) (vwformat (assoc datum :label nil)))
   (.readLine (:in vw-connection)))
 
-
 ;; ;;; Tutorial house Example from https://github.com/JohnLangford/vowpal_wabbit/wiki/Tutorial (assumes that vw is running in demon mode at localhost:26542)
 
 ;; ;;; Online:
 
+0 | price:.23 sqft:.25 age:.05 2006
+1 2 'second_house | price:.18 sqft:.15 age:.35 1976
+0 1 0.5 'third_house | price:.53 sqft:.32 age:.87 1924
+
 ;; (def d1 (datum 0 #{(feature-set #{(feature "price" 0.23) (feature "sqft" 0.25) (feature "age" 0.05) (feature 2006)})}))
 ;; (def d2 (datum 1 2 nil 'second_house #{(feature-set #{(feature "price" 0.18) (feature "sqft" 0.15) (feature "age" 0.35) (feature 1976)})}))
 ;; (def d3 (datum 0 1 0.5 'third_house #{(feature-set #{(feature "price" 0.53) (feature "sqft" 0.32) (feature "age" 0.87) (feature 1924 nil)})}))
-
+(def f (vwformat d1))
+"aaa"
+(type f)
 ;; (vwformat d1)
 ;; ;; => "0 | sqft:0.25 price:0.23 age:0.05 2006\n"
 ;; (vwformat d2)
