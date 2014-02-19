@@ -207,17 +207,6 @@
                     system)]
        (switch-context system component-id :up #{component-id}  #{}))))
 
-(swap! +system+
-       #(let [log-channel (as/chan)
-              system (set-system-log-channel % log-channel)]
-          (as/go-loop []
-            (if-let [m (as/<! log-channel)]
-              (do (if-let [e (get-in m [:msg :exception])]
-                    (timbre/log (:level m) e (:msg m))
-                    (timbre/log (:level m) (:msg m)))
-                  (recur))
-              (as/close! log-channel)))))
-
 (defn stop-system 
   ([system] (stop-system system :main-system))
   ([system component-id]

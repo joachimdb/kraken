@@ -1,9 +1,8 @@
 (ns kraken.core
   (:use [kraken.system]
+        [kraken.model]
         [kraken.elastic]
         [kraken.api.cryptsy]
-        [kraken.model]
-        ; [kraken.api.core]
         [compojure.core]
         [ring.util.serve]) 
   (:require [clj-time.format :as tformat]
@@ -11,34 +10,29 @@
             [clj-time.core :as tcore]
             [compojure.handler :as handler]
             [compojure.route :as route]
-            ; [kraken.elastic :as es]
             [kraken.channels :as ch]
-            ; [kraken.api.public :as pub]
             [clojure.core.async :as as]))
 
-;; (hard-reset!)
-(system)
-(initialize!)
-(start!)
+(defcomponent :app [:elastic :cryptsy]
+  ComponentP 
+  (initial-config [this] {})
+  (initialize [this system] 
+              (create-index! system :elastic (index (mk-trade "cryptsy" "DOGE/BTC" 0 0 0) system))
+              (as/go-loop []
+                (let [t (as/<! (get-cfg system :cryptsy :trade-channels "DOGE/BTC"))]
+                  (when t
+                    (as/>! (get-cfg system :elastic :index-channel) t)
+                    (recur))))
+              system)
+  (start [this system] system)
+  (stop [this system] system)
+  (shutdown [this system]))
+
 (shutdown!)
 
-;; TODO: the following worked, but I didn't notice anything
-(create-index! (system) (index (mk-trade "cryptsy" "DOGE/BTC" 0 0 0) (system)))
-
-(def t (as/<!! (get-cfg (system) :cryptsy :trade-channels "DOGE/BTC")))
-(as/>!! (get-cfg (system) :elastic :index-channel) t)
-
-(as/go-loop []
-  (let [t (as/<! (get-cfg (system) :cryptsy :trade-channels "DOGE/BTC"))]
-    (when t
-      (info (system) :control "indexing trade")
-      (as/>! (get-cfg (system) :elastic :index-channel) t)
-      (recur))))
-
-(trades (system) "cryptsy"
-        :sort {:time {:order "desc"}})
-
-(tcore/now)
+;;; TODO: 
+;;; - mk connection between cryptsy and elastic
+;;; - start thinking about extracting and visualizaing data from elastic
 
 
 

@@ -10,6 +10,13 @@
             [clj-http.client :as http]
             [clojure.data.json :as json]))
 
+;; TODO: when trade channel is started, the las-id is set to the id of the most recent trade. This
+;; means that when the system is (re)started, indexing begins with the last trade. This is not good
+;; in the sense that data from before start time is lost. But it is good in the sense that this
+;; prevents duplicate trades to be sent in between restarts, except when a restart occurs before a
+;; new trade occurred. Although this is probably a rare event, it should be fixed (by adding a
+;; last-trade-id to cfg on init)
+
 (defn- cryptsy-private [method public-key private-key &{:keys [params] 
                                                         :or {params {}}}]
   (let [query-params (merge params {:method method

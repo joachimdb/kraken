@@ -56,8 +56,10 @@
 (defn start-index-channel! [system component-id]
   (let [in (as/chan)]
     (as/go (loop [doc (as/<! in)]
-             (index! system component-id doc)
-             (recur (as/<! in))))
+             (if doc
+               (do (index! system component-id doc)
+                   (recur (as/<! in)))
+               (as/close! in))))
     (set-cfg system component-id {:index-channel in})))
 
 (defn init-elastic [system id]
@@ -78,13 +80,13 @@
   (stop [this system] system)
   (shutdown [this system] (shutdown-elastic system :elastic)))
 
-(defn create-index! [system idx]
-  (with-system-connection [sc system]
+(defn create-index! [system component-id idx]
+  (with-system-connection [sc system component-id]
     (when-not (esi/exists? idx)
-      (info system :elastic (str "Create index " idx ", settings " (get-cfg system :elastic :index-settings) ", mappings " (get-cfg system :elastic :mappings)))
+      (info system component-id (str "Create index " idx ", settings " (get-cfg system :elastic :index-settings) ", mappings " (get-cfg system :elastic :mappings)))
       (esi/create idx
-                  :settings (get-cfg system :elastic :index-settings)
-                  :mappings (get-cfg system :elastic :mappings))))
+                  :settings (get-cfg system component-id :index-settings)
+                  :mappings (get-cfg system component-id :mappings))))
   system)
 
 ;; (def idx (index (mk-trade "cryptsy" "DOGE/BTC" 0 0 0) (system)))
