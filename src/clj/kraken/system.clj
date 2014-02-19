@@ -63,16 +63,26 @@
 
 (defn status [system component-id & keys]
   (get-in system (concat (flatten [:components component-id :status]) keys)))
-(defn up? [system component-id]
-  (= :up (status system component-id)))
-(defn running? [system component-id]
-  (= :running (status system component-id)))
-(defn stopped? [system component-id]
-  (= :stopped (status system component-id)))
-(defn down? [system component-id]
-  (= :down (status system component-id)))
-(defn failed? [system component-id]
-  (= :failed (status system component-id)))
+(defn up? 
+  ([system] (up? system :main-system))
+  ([system component-id]
+     (= :up (status system component-id))))
+(defn running? 
+  ([system] (running? system :main-system))
+  ([system component-id]
+     (= :running (status system component-id))))
+(defn stopped? 
+  ([system] (stopped? system :main-system))
+  ([system component-id]
+     (= :stopped (status system component-id))))
+(defn down? 
+  ([system] (down? system :main-system))
+  ([system component-id]
+     (= :down (status system component-id))))
+(defn failed? 
+  ([system] (failed? system :main-system))
+  ([system component-id]
+     (= :failed (status system component-id))))
 
 (defn set-status [system component-id target]
   (assert (#{:up :down :running :stopped :failed} target))
@@ -153,7 +163,7 @@
              (loop [subtargets (remove skip-targets (target-context target))
                     system system]
                (if (empty? subtargets)
-                 system ;; failed to switch context
+                 (warn system component-id (str "Failed to switch to context" target)) 
                  (let [new-system (switch-context system component-id (first subtargets) skip-components (conj skip-targets target))]
                    (if (= (first subtargets) (status new-system component-id))
                      (switch-context new-system component-id target skip-components skip-targets)
@@ -175,69 +185,79 @@
 (deftarget :running
   :context #{:up :stopped}
   :component-handler start)
+(deftarget :failed
+  :context #{}
+  :component-handler nil)
 
-(defn init-system [system]
-  (let [log-channel (as/chan)
-        system (set-system-log-channel system log-channel)]
-    (as/go-loop []
-      (if-let [m (as/<! log-channel)]
-        (do (if-let [e (get-in m [:msg :exception])]
-              (timbre/log (:level m) e (:msg m))
-              (timbre/log (:level m) (:msg m)))
-            (recur))
-        (as/close! log-channel)))
-    (timbre/info "Initializing main system")
-    (switch-context system :main-system :up #{:main-system}  #{})))
+(defn init-system 
+  ([system] (init-system system :main-system))
+  ([system component-id]
+     (timbre/info "Initializing system" component-id)
+     (let [system (if (= :main-system component-id)
+                    (let [log-channel (as/chan)
+                          system (set-system-log-channel system log-channel)]
+                      (as/go-loop []
+                        (if-let [m (as/<! log-channel)]
+                          (do (if-let [e (get-in m [:msg :exception])]
+                                (timbre/log (:level m) e (:msg m))
+                                (timbre/log (:level m) (:msg m)))
+                              (recur))
+                          (as/close! log-channel)))
+                      system)
+                    system)]
+       (switch-context system component-id :up #{component-id}  #{}))))
 
-(defn stop-system [system]
-  (timbre/info "Stopping main system") ;; can't use info at this level (system may not be initialized)
-  (switch-context (if (down? system :main-system)
-                    (init-system system)
-                    system)
-                  :main-system :stopped #{:main-system} #{}))
+(swap! +system+
+       #(let [log-channel (as/chan)
+              system (set-system-log-channel % log-channel)]
+          (as/go-loop []
+            (if-let [m (as/<! log-channel)]
+              (do (if-let [e (get-in m [:msg :exception])]
+                    (timbre/log (:level m) e (:msg m))
+                    (timbre/log (:level m) (:msg m)))
+                  (recur))
+              (as/close! log-channel)))))
 
-(defn start-system [system]
-  (timbre/info "Starting main system")
-  (switch-context (if (down? system :main-system)
-                    (init-system system)
-                    system)
-                  :main-system :running #{:main-system}  #{}))
+(defn stop-system 
+  ([system] (stop-system system :main-system))
+  ([system component-id]
+     (timbre/info "Stopping system" component-id) ;; can't use info at this level (system may not be initialized)     
+     (switch-context (if (down? system)
+                       (init-system system)
+                       system)
+                     component-id :stopped #{component-id} #{})))
 
-(defn shutdown-system [system]
-  (timbre/info "Shutting down main system")
-  (let [system (switch-context system :main-system :down #{:main-system} #{})]
-    (when-let [log-chan (system-log-channel system)]
-      (as/close! log-chan))
-    (set-system-log-channel system nil)))
+(defn start-system 
+  ([system] (start-system system :main-system))
+  ([system component-id]
+     (timbre/info "Starting system" component-id)
+     (switch-context (if (down? system)
+                       (init-system system)
+                       system)
+                     component-id :running #{component-id}  #{})))
 
+(defn shutdown-system 
+  ([system] (shutdown-system system :main-system))
+  ([system component-id]
+     (timbre/info "Shutting down system" component-id)
+     (let [system (switch-context system component-id :down #{component-id} #{})]
+       (if (= :main-system component-id)
+         (do (when-let [log-chan (system-log-channel system)]
+               (as/close! log-chan))
+             (set-system-log-channel system nil))
+         system))))
 
 (defn camelize [path] 
   (let [words (clojure.string/split (name path) #"[\s_-]+")] 
     (clojure.string/join "" (cons (clojure.string/lower-case (first words)) 
                                   (map clojure.string/capitalize (rest words))))))
 
-;; (defmacro defcomponent [id [:as dependencies] & clauses]
-;;   `(do (deftype ~(symbol (camelize (clojure.string/replace (apply str (flatten [id])) #":" "-"))) [] ;; ~slots
-;;          ~@clauses)
-;;        (defn ~(symbol (clojure.string/replace (apply str (flatten ["mk" id])) #":" "-")) [] ;; ~slots
-;;          (~(symbol (camelize (clojure.string/replace (apply str (flatten [id "."])) #":" "-")))
-;;           ;; ~@slots
-;;           ))
-;;        (swap! +system+ 
-;;               #(update-in
-;;                 (deep-merge %
-;;                             (assoc-in {}
-;;                                       (flatten [:components ~id]) 
-;;                                       {:instance (~(symbol (clojure.string/replace (apply str (flatten ["mk" id])) #":" "-")) ;; ~@(map (constantly nil) slots)
-;;                                                   )
-;;                                        :factory ~(symbol (clojure.string/replace (apply str (flatten ["mk" id])) #":" "-"))
-;;                                        :status :down}))
-;;                 [:components :main-system :dependencies]
-;;                 clojure.set/union 
-;;                 ~(disj (conj (into #{} dependencies) id) :main-system)))))
-
 (defmacro defcomponent [id [:as dependencies] & clauses]
-  `(do (deftype ~(symbol (camelize (clojure.string/replace (apply str (flatten [id])) #":" "-"))) [] ;; ~slots
+  `(do (when-let [prev# (component @+system+ ~id)]
+         (when-not (down? @+system+ ~id)
+           (timbre/warn (str "System " ~(vec (flatten [id])) " - [" (status @+system+ ~id)  " => :down]"))
+           (shutdown prev# @+system+)))
+       (deftype ~(symbol (camelize (clojure.string/replace (apply str (flatten [id])) #":" "-"))) [] ;; ~slots
          ~@clauses)
        (defn ~(symbol (clojure.string/replace (apply str (flatten ["mk" id])) #":" "-")) [] ;; ~slots
          (~(symbol (camelize (clojure.string/replace (apply str (flatten [id "."])) #":" "-")))
@@ -247,7 +267,7 @@
        (when-not (or (= :main-system ~id)
                      (down? @+system+ :main-system))
          (timbre/warn (str "System " [:main-system] " - [" (status @+system+ :main-system) " => :down]")))
-       (swap! +system+ 
+       (swap! +system+
               #(assoc-in 
                 (update-in
                  (deep-merge %
@@ -278,15 +298,15 @@
 (defn initialize!
   ([] (initialize! :main-system))
   ([component-id]
-     (swap! +system+ #(initialize (component % :main-system) %))))
+     (swap! +system+ #(initialize (component % component-id) %))))
 (defn start!
   ([] (start! :main-system))
   ([component-id]
-     (swap! +system+ #(start (component % :main-system) %))))
+     (swap! +system+ #(start (component % component-id) %))))
 (defn stop! 
   ([] (stop! :main-system))
   ([component-id]
-     (swap! +system+ #(stop (component % :main-system) %))))
+     (swap! +system+ #(stop (component % component-id) %))))
 (defn shutdown! 
   ([] (shutdown! :main-system))
   ([component-id]

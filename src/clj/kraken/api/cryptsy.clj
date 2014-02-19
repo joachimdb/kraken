@@ -10,117 +10,6 @@
             [clj-http.client :as http]
             [clojure.data.json :as json]))
 
-(defn cryptsy-public [method &{:keys [query-params] 
-                               :or {query-params {}}}] 
-  (json/read-str (:body (http/get (str "http://pubapi.cryptsy.com/api.php?method=" method)
-                                  {:query-params query-params} ))))
-
-(defn- parse-trade [trade]
-  {:price (read-string (get trade "price"))
-   :quantity (read-string (get trade "quantity"))
-   :time (clj-time.format/parse (get trade "time"))
-   :id (read-string (get trade "id"))
-   :total (read-string (get trade "total"))})
-
-(defn- parse-order [order]
-  {:price (read-string (get order "price"))
-   :quantity (read-string (get order "quantity"))
-   :total (read-string (get order "total"))})
-
-(defn- parse-market-data [md]
-  {:market-id (read-string (get md "marketid"))
-   :label (get md "label")
-   :primary-name (get md "primaryname")
-   :primary-code (get md "primarycode")
-   :secondary-name (get md "secondaryname")
-   :secondary-code (get md "secondarycode")
-   :last-trade-price (when (contains? md "lasttradeprice")
-                       (read-string (get md "lasttradeprice")))
-   :last-trade-time (tformat/parse (get md "lasttradetime"))
-   :volume (when (contains? md "volume")
-             (read-string (get md "volume")))
-   :recent-trades (mapv parse-trade (get md "recenttrades"))
-   :sell-orders (mapv parse-order (get md "sellorders"))
-   :buy-orders (mapv parse-order (get md "buyorders"))})
-
-(defn orders 
-  "Same as market-data, but doesn't return values for any trade related keys"
-  [& market-ids]
-  (if (empty? market-ids)
-    (let [all-orders (get (cryptsy-public "orderdata") "return")]
-      (zipmap (keys all-orders)
-              (map parse-market-data (vals all-orders))))
-    (zipmap market-ids
-            (map (fn [market-id]
-                   (let [md (val (first (get (cryptsy-public "singleorderdata" :query-params {:marketid market-id})
-                                             "return")))]
-                     (dissoc (parse-market-data md)
-                             :recent-trades :last-trade-time :last-trade-price :volume)))
-                 market-ids))))
-;; (orders "LTC/BTC")
-
-(defn market-data 
- "General Market Data
-
-  Returns a map of market data maps
-
-  Example: 
-
-  (def md (market-data \"DOGE/BTC\" \"DOGE/LTC\"))
-
-  (keys md) => (\"DOGE/LTC\" \"DOGE/BTC\") 
-  
-  (get md \"DOGE/LTC\")
-  => {:market-id 132,
-      :label :DOGE/BTC,
-      :primaryname \"Dogecoin\",
-      :primarycode :DOGE,
-      :secondaryname \"BitCoin\",
-      :secondarycode :BTC,
-      :lasttradeprice 0.00000219
-      :lasttradetime #<DateTime 2014-01-25T17:20:23.000Z>,
-      :volume 1765529079.68198780
-      :recent-trades
-      [{:price 1.58E-6, :quantity 23161.61437057, :time #<DateTime 2014-02-05T17:29:13.000Z>, :id 21585792, :total 0.03659535}
-       {:price 1.59E-6, :quantity 14502.96282435, :time #<DateTime 2014-02-05T17:29:06.000Z>, :id 21585788, :total 0.02305971}
-    ...],       
-      :sell-orders
-      [{:price 0.00000218, :quantity 148613.86735303, :total 2.18000000} 
-       {:price 0.00000219, :quantity 474041.74876534, :total 1.03815143}
-       ...],
-      :buy-orders
-      [{:price 0.00000218, :quantity 0.00000000, :total 0.02180000}
-       {:price 0.00000217, :quantity 1902765.84653952, :total 4.61028438}
-       {:price 0.00000216, :quantity 22174803.88215621, :total 47.89757637}
-       ...]}
-"
- [& market-ids]
- (if (empty? market-ids)
-    (let [all-mdata (get-in (cryptsy-public "marketdatav2") ["return" "markets"])]
-      (zipmap (keys all-mdata)
-              (map parse-market-data (vals all-mdata))))
-    (zipmap market-ids
-            (map #(parse-market-data 
-                   (val 
-                    (first 
-                     (get-in (cryptsy-public "singlemarketdata" :query-params {:marketid %})
-                             ["return" "markets"]))))
-                 market-ids))))
-
-;; (defn- trades [market-data]
-;;   (map #(apply mk-trade ((juxt :prive :quantity :time) %))
-;;        (:recent-trades market-data)))
-
-;; (defn- order-book [market-data]
-;;   (mk-order-book (map #(mk-order (:price %) (:quantity %))
-;;                       (:sell-orders market-data))
-;;                  (map #(mk-order (:price %) (:volume %))
-;;                       (:buy-orders market-data))))
-
-;; (defn- ticks [market-data] ... )
-
-;; ;;; private api
-
 (defn- cryptsy-private [method public-key private-key &{:keys [params] 
                                                         :or {params {}}}]
   (let [query-params (merge params {:method method
@@ -216,7 +105,7 @@
          ret)))
 ;; (my-transactions public-key private-key)
 
-(defn market-trades 
+(defn- market-trades 
   "Method: markettrades 
    
    Params:
@@ -247,7 +136,7 @@
 ;;                market-id
 ;;                exchange-time-zone)
 
-(defn market-orders 
+(defn- market-orders 
   "Method: marketorders 
    
    Inputs:
@@ -273,7 +162,7 @@
                        (get ret "buyorders"))}))
 ;; (market-orders public-key private-key market-id)
 
-(defn my-trades
+(defn- my-trades
   "Method: mytrades 
    
    Inputs:
@@ -307,7 +196,7 @@
             ret))))
 ;; (my-trades public-key private-key market-id exchange-time-zone)
 
-(defn my-orders 
+(defn- my-orders 
   "Method: myorders 
    
    Inputs:
@@ -337,7 +226,7 @@
          ret)))
 ;; (my-orders public-key private-key market-id exchange-time-zone)
 
-(defn depth 
+(defn- depth 
   "Method: depth 
    
    Inputs:
@@ -367,7 +256,7 @@
 ;;               (market-id (get-cfg (system) :cryptsy :markets) "DOGE/BTC")))
 ;; (first (:buy-orders d))
 
-(defn create-order
+(defn- create-order
   "Method: createorder 
    
    Inputs:
@@ -397,7 +286,7 @@
 ;; => exception (Insufficient funds)
 
 
-(defn cancel-order 
+(defn- cancel-order 
   "Method: cancelorder 
    
    Inputs:
@@ -412,7 +301,7 @@
     true))
 ;; (cancel-order public-key private-key order-id)
 
-(defn calculate-fees
+(defn- calculate-fees
   "Method: calculatefees 
    
    Inputs:
@@ -437,77 +326,7 @@
      :net (read-string (get ret "net"))}))
 ;; (calculate-fees public-key private-key "Sell" 50000 0.00000300)
 
-
-;; TO DO: implement remaining endpoints below
-
-;;    Method: allmytrades 
-   
-;;    Inputs: n/a 
-   
-;;    Outputs: Array your Trades for all Markets, in Date Decending Order 
-   
-;;    tradeid	An integer identifier for this trade
-;;    tradetype	Type of trade (Buy/Sell)
-;;    datetime	Server datetime trade occurred
-;;    marketid	The market in which the trade occurred
-;;    tradeprice	The price the trade occurred at
-;;    quantity	Quantity traded
-;;    total	Total value of trade (tradeprice * quantity) - Does not include fees
-;;    fee	Fee Charged for this Trade
-;;    initiate_ordertype	The type of order which initiated this trade
-;;    order_id	Original order id this trade was executed against
-   
-   
-;;    Method: allmyorders 
-   
-;;    Inputs: n/a 
-   
-;;    Outputs: Array of all open orders for your account. 
-   
-;;    orderid	Order ID for this order
-;;    marketid	The Market ID this order was created for
-;;    created	Datetime the order was created
-;;    ordertype	Type of order (Buy/Sell)
-;;    price	The price per unit for this order
-;;    quantity	Quantity remaining for this order
-;;    total	Total value of order (price * quantity)
-;;    orig_quantity	Original Total Order Quantity
-   
-   
-;;    Method: cancelmarketorders 
-   
-;;    Inputs:
-   
-;;    marketid	Market ID for which you would like to cancel all open orders
-   
-   
-;;    Outputs: 
-   
-;;    return	Array for return information on each order cancelled
-   
-   
-;;    Method: cancelallorders 
-   
-;;    Inputs: N/A 
-   
-;;    Outputs: 
-   
-;;    return	Array for return information on each order cancelled
-   
-   
-;;    Method: generatenewaddress 
-   
-;;    Inputs: (either currencyid OR currencycode required - you do not have to supply both)
-   
-;;    currencyid	Currency ID for the coin you want to generate a new address for (ie. 3 = BitCoin)
-;;    currencycode	Currency Code for the coin you want to generate a new address for (ie. BTC = BitCoin)
-   
-   
-;;    Outputs: 
-   
-;;    address	The new generated address
-
-(defn trade-channel* [public-key private-key market-id exchange-time-zone poll-interval control-channel error-channel]
+(defn- trade-channel* [public-key private-key market-id exchange-time-zone poll-interval control-channel error-channel]
   (let [last-id (atom nil)]   
     (as/filter< (fn [trade] 
                   (let [id (read-string (:id trade))]
@@ -523,7 +342,7 @@
 
 (defn- market-id [markets market-code] (:id (first (filter #(= (:market-code %) market-code) markets))))
 
-(defn start-trade-channel! [system component-id market-code]
+(defn- start-trade-channel! [system component-id market-code]
   (let [control-channel (as/chan 1)]
     (as/tap (get-cfg system component-id :control) control-channel)
     (set-cfg system 
@@ -561,41 +380,44 @@
 ;;                  control-channel
 ;;                  error-channel))
 
-(defn init-cryptsy [system id]
-  (let [public-key (get-cfg system id :public-key)
-        private-key (get-cfg system id :private-key)
-        poll-interval (get-cfg system id :poll-interval)]
-    (if (and public-key private-key poll-interval)
-      (let [info (get-info public-key private-key)
-            markets (get-markets public-key private-key)
-            balances (deep-merge (zipmap (keys (remove #(zero? (val %)) (:available info)))
+(defn- cryptsy-initial-config [info markets]
+  {:balances (deep-merge (zipmap (keys (remove #(zero? (val %)) (:available info)))
                                          (map #(hash-map :unheld %)
                                               (vals (remove #(zero? (val %)) (:available info)))))
                                  (zipmap (keys (remove #(zero? (val %)) (:held info)))
                                          (map #(hash-map :held %)
                                               (vals (remove #(zero? (val %)) (:held info))))))
-            control-channel (as/chan)]
-        (-> system 
-            (set-cfg id {:balances balances
-                         :last-updated (:info-time info)
-                         :exchange-time-zone (:server-time-zone info)
-                         :open-order-count (:open-order-count info)
-                         :markets markets
-                         :control-channel control-channel
-                         :control (as/mult control-channel)
-                         :poll-interval poll-interval})
-            (start-trade-channel! id "DOGE/BTC")))
+   :last-updated (:info-time info)
+   :exchange-time-zone (:server-time-zone info)
+   :open-order-count (:open-order-count info)
+   :markets markets})
+
+(defn- cryptsy-control-config []
+  (let [control-channel (as/chan)]
+    {:control-channel control-channel
+     :control (as/mult control-channel)}))
+
+(defn- init-cryptsy [system id]
+  (let [public-key (get-cfg system id :public-key)
+        private-key (get-cfg system id :private-key)
+        poll-interval (get-cfg system id :poll-interval)]
+    (if (and public-key private-key poll-interval)
+      (-> system 
+          (set-cfg id (cryptsy-initial-config (get-info public-key private-key) (get-markets public-key private-key)))
+          (set-cfg id (cryptsy-control-config))
+          (set-cfg id {:poll-interval poll-interval})
+          (start-trade-channel! id "DOGE/BTC"))
       (throw (Exception. "Cannot initialize cryptsy: keys not specified in system")))))
 
-(defn start-cryptsy [system id]
+(defn- start-cryptsy [system id]
   (as/go (as/>! (get-cfg system id :control-channel) :start))
   system)
 
-(defn stop-cryptsy [system id]
+(defn- stop-cryptsy [system id]
   (as/go (as/>! (get-cfg system id :control-channel) :stop))
   system)
 
-(defn shutdown-cryptsy [system id]
+(defn- shutdown-cryptsy [system id]
   (as/go (as/>! (get-cfg system id :control-channel) :close))
   (as/close! (get-cfg system id :control-channel))
   system)

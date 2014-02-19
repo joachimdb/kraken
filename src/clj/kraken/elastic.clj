@@ -11,13 +11,12 @@
             [clj-time.coerce :as tcoerce]
             [clojure.core.async :as as]))
 
-
 ;; (get-cfg (system) :elastic))
 
-(defn connect [system id]
-  (let [conn (get-cfg system id :connection)]
+(defn connect [system component-id]
+  (let [conn (get-cfg system component-id :connection)]
     (if (= :rest (:type conn))
-      (assoc-in system (flatten [id :connection :instance])
+      (assoc-in system (flatten [component-id :connection :instance])
                 (esr/connect (str (:protocol conn) "://" (:host conn) ":" (:port conn))))
       (throw (Exception. (str "Unknown connection type " (:type conn)))))))
 ;; (connect @+system+ :elastic)
@@ -26,26 +25,12 @@
   `(binding [esr/*endpoint* ~con]
      ~@body))
 
-(defn system-connection [system]
-  (get-cfg system :elastic :connection :instance))
+(defn system-connection [system component-id]
+  (get-cfg system component-id :connection :instance))
 
-(defmacro with-system-connection [[sc system] & body]
-  `(with-connection [sc (system-connection ~system)]
+(defmacro with-system-connection [[sc system component-id] & body]
+  `(with-connection [sc (system-connection ~system ~component-id)]
      ~@body))
-
-(defcomponent :elastic []  
-  ComponentP 
-  (initial-config [this] (read-string (slurp (str (System/getProperty "user.home") "/.kraken/elastic/config.edn"))))
-  (initialize [this system] (connect system :elastic))
-  (start [this system] system)
-  (stop [this system] system)
-  (shutdown [this system] system))
-
-;;; TODO
-;;; - just like cryptsy pushes things onto a channel, so should the elastic component accept things on a channel
-;;; - there is a problem that we don't know what index and mapping to use
-;;; - To solve this, we define an Item protocol. 
-;;; - Afterwards: Take care of configuration how indexes are created
 
 (defmulti querify (fn [x] (type x)))
 (defmethod querify :default [x] 
@@ -57,16 +42,41 @@
 (defmethod querify clojure.lang.MapEntry [x]
   [(querify (key x)) (querify (val x))])
 
-(defn- index-document! [system d]
-  (with-system-connection [sc system]
+(defn- index-document! [system component-id d]
+  (with-system-connection [sc system component-id]
     (esd/create (index d system) (mapping-type d system) 
                 (querify (document d system))))
   system)
 
-(defn index! [system d]
+(defn index! [system component-id d]
   (if (satisfies? DocumentP d)
-    (index-document! system d)
-    (error system :elastic (str d " does not satisfy the Document protocol."))))
+    (index-document! system component-id d)
+    (error system component-id (str d " does not satisfy the Document protocol."))))
+
+(defn start-index-channel! [system component-id]
+  (let [in (as/chan)]
+    (as/go (loop [doc (as/<! in)]
+             (index! system component-id doc)
+             (recur (as/<! in))))
+    (set-cfg system component-id {:index-channel in})))
+
+(defn init-elastic [system id]
+  (-> system
+      (connect id)
+      (start-index-channel! id)))
+
+(defn shutdown-elastic [system id]
+  (when-let [in (get-cfg system id :index-channel)]
+    (as/close! in))
+  (set-cfg system id {:index-channel nil}))
+
+(defcomponent :elastic []  
+  ComponentP 
+  (initial-config [this] (read-string (slurp (str (System/getProperty "user.home") "/.kraken/elastic/config.edn"))))
+  (initialize [this system] (init-elastic system :elastic))
+  (start [this system] system)
+  (stop [this system] system)
+  (shutdown [this system] (shutdown-elastic system :elastic)))
 
 (defn create-index! [system idx]
   (with-system-connection [sc system]
@@ -81,6 +91,35 @@
 ;; (create-index! (system) idx)
 ;; (get-cfg (system) :elastic)
 ;; (esd/count idx :trade)
+;; 10
+
+(defn hits [system idx mapping
+            & {:keys [query filter size facets search_type sort fields]
+               :or {query {:match_all {}}
+                    search_type "query_then_fetch"}
+               :as opts}]
+  (with-system-connection [sc system :elastic]
+    (let [esr (apply esd/search idx mapping 
+                     (mapcat identity (merge opts {:query query :search_type search_type })))]
+      (with-meta (map (fn [hit] (with-meta (or (:_source hit) (:fields hit))
+                                  (dissoc hit :_source :fields)))
+                      (:hits (:hits esr)))
+        (merge (dissoc esr :hits)
+               (dissoc (:hits esr) :hits))))))
+
+(defn trades [system exchange-code
+              & {:keys [query filter size facets search_type sort fields]
+                 :as opts}]
+  (let [hits (apply hits system (index-name system exchange-code) :trade
+                    (flatten (seq opts)))]
+    (with-meta (map #(with-meta (mk-trade exchange-code 
+                                          (:market-code %)
+                                          (:price %)
+                                          (:volume %)
+                                          (tcoerce/from-long (:time %)))
+                       (meta %))
+                    hits)
+      (meta hits))))
 
 ;; 
 ;; (with-system-connection [sc (system)]
@@ -131,19 +170,6 @@
 ;;         (merge (dissoc initial-response :hits)
 ;;                (dissoc (:hits initial-response) :hits))))))
 
-;; (defn hits [es-connection idx mapping
-;;             & {:keys [query filter size facets search_type sort fields]
-;;                :or {query {:match_all {}}
-;;                     search_type "query_then_fetch"}
-;;                :as opts}]
-;;   (with-connection [es-connection]
-;;     (let [esr (apply esd/search idx mapping 
-;;                      (mapcat identity (merge opts {:query query :search_type search_type })))]
-;;       (with-meta (map (fn [hit] (with-meta (or (:_source hit) (:fields hit))
-;;                                   (dissoc hit :_source :fields)))
-;;                       (:hits (:hits esr)))
-;;         (merge (dissoc esr :hits)
-;;                (dissoc (:hits esr) :hits))))))
 
 ;; ;;; II. Queries construction helper functions
 ;; ;;; =========================================

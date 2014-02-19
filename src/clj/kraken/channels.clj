@@ -13,8 +13,7 @@
               (do (println "Received control " control) (flush)
                   (recur x control [nil nil]))
               (= status :close)
-              (do (println "Closing")
-                  (as/close! out))
+              (as/close! out)
               (= status :start)
               (let [next (try (f x)
                               (catch Exception e e))] 

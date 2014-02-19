@@ -8,6 +8,7 @@
         [ring.util.serve]) 
   (:require [clj-time.format :as tformat]
             [clj-time.coerce :as tcoerce]
+            [clj-time.core :as tcore]
             [compojure.handler :as handler]
             [compojure.route :as route]
             ; [kraken.elastic :as es]
@@ -18,92 +19,27 @@
 ;; (hard-reset!)
 (system)
 (initialize!)
+(start!)
+(shutdown!)
 
 ;; TODO: the following worked, but I didn't notice anything
 (create-index! (system) (index (mk-trade "cryptsy" "DOGE/BTC" 0 0 0) (system)))
 
-(start!)
-
 (def t (as/<!! (get-cfg (system) :cryptsy :trade-channels "DOGE/BTC")))
+(as/>!! (get-cfg (system) :elastic :index-channel) t)
 
-(index! (system) t)
+(as/go-loop []
+  (let [t (as/<! (get-cfg (system) :cryptsy :trade-channels "DOGE/BTC"))]
+    (when t
+      (info (system) :control "indexing trade")
+      (as/>! (get-cfg (system) :elastic :index-channel) t)
+      (recur))))
 
-(stop!)
+(trades (system) "cryptsy"
+        :sort {:time {:order "desc"}})
 
-;;; TODO: 
-;;; - install channel in elastic component accepting documents
-;;; - also make component for kraken
-;;; - then see what next, maybe make exchanges component, 
-;;; - make elastic component (should go in kraken.elastic...)
-;;; - combine (in kraken.core)
+(tcore/now)
 
-
-
-
-
-;; "controler" => actual call to first initialize / start in the chain...
-
-(initialize (get-in (system) [:components :system :instance]))
-
-;; => should initialize all defined components
-
-
-(go) => calls 
-(swap! +config+ (api/initialize {:api :cryptsy))
-(cfg! [:api] )
-;; ;;; See file kraken.examples.channels.clj for examples
-
-;;  ;; (es/delete-indices (es/local-connection))
-;; (es/create-indices (es/local-connection))
-;; (reset! ch/+continue+ true)
-;; (def poll-interval (* 1000 60 3)) ;; 3 minutes
-;; ;; (reset! ch/+continue+ false)
-
-;; (def +pairs+ ["XLTCZEUR" "XNMCZEUR" "XXBTZEUR"])
-
-;; (def es-tick-connection 
-;;   (connect! (ch/tick-source (apply str (interpose "," +pairs+)) poll-interval false)
-;;             (ch/tick-indexer (es/local-connection))))
-
-;; (defn compute-last-spread-settings [es-connection pair]
-;;   (let [new-spreads (pub/spread pair)
-;;         indexed-spreads (into #{} (es/all-spreads es-connection
-;;                                                   :query (es/match-query :asset pair)
-;;                                                   :filter (es/daterange-filter :time (:time (first new-spreads)))))
-;;         missing (clojure.set/difference (into #{} new-spreads) indexed-spreads)]
-;;     (when-not (empty? missing)
-;;       (println "indexing" (count missing) "spreads")
-;;       (apply es/index-spread es-connection missing))
-;;     ;; (doseq [s (clojure.set/difference (into #{} new-spreads) indexed-spreads)]
-;;     ;;   (es/index-spread es-connection s))
-;;     {:last (:last (meta new-spreads))
-;;      :last-processed (count (filter #(= (* 1000 (:last (meta new-spreads))) (tcoerce/to-long (:time %))) new-spreads))}))
-
-;; (def es-spread-connection
-;;   (let [es-connection (es/local-connection)]
-;;     (doseq [pair +pairs+]
-;;       (let [last-settings (compute-last-spread-settings es-connection pair)]
-;;         (connect! (ch/spread-source pair poll-interval false (:last last-settings) (:last-processed last-settings))
-;;                   (ch/spread-indexer es-connection))))))
-
-;; (defn compute-last-trade-settings [es-connection pair]
-;;   (let [new-trades (pub/trades pair)
-;;         indexed-trades (into #{} (es/all-trades es-connection
-;;                                                 :query (es/match-query :asset pair)
-;;                                                 :filter (es/daterange-filter :time (:time (first new-trades)))))
-;;         missing (clojure.set/difference (into #{} new-trades) indexed-trades)]
-;;     (when-not (empty? missing)
-;;       (println "indexing" (count missing) "trades")
-;;       (apply es/index-trade es-connection missing))
-;;     {:last (:last (meta new-trades))}))
-
-;; (def es-trade-connection 
-;;   (let [es-connection (es/local-connection)]
-;;     (doseq [pair +pairs+]
-;;       (let [last-settings (compute-last-trade-settings es-connection pair)]
-;;         (println "lts:" last-settings)
-;;         (connect! (ch/trade-source pair poll-interval false (:last last-settings))
-;;                   (ch/trade-indexer (es/local-connection)))))))
 
 
 ;; ;; defroutes macro defines a function that chains individual route
