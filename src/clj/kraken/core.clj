@@ -30,13 +30,7 @@
 
 (start!)
 
-;; (def ts (trades (system) "cryptsy"
-;;                 :sort {:time {:order "desc"}}
-;;                 :size 1000))
-
 ;; (shutdown!)
-
-
 
 ;; ;; defroutes macro defines a function that chains individual route
 ;; ;; functions together. The request map is passed to each function in
