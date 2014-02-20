@@ -14,7 +14,7 @@
                  [ring/ring-json "0.2.0"]
                  [compojure "1.1.6"]
                  [org.clojure/clojurescript "0.0-2069"]
-                 [clojurewerkz/elastisch "1.1.1"]
+                 [clojurewerkz/elastisch "1.5.0-beta3"]
                  [http-kit "2.1.13"]
                  [com.taoensso/timbre "3.0.1"]]
   :ring {:handler kraken.core/handler}

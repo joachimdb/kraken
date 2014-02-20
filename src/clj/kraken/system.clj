@@ -4,7 +4,15 @@
             [clj-time.coerce :as tcoerce]
             [clj-time.core :as tcore]
             [clojure.core.async :as as]
-            [taoensso.timbre :as timbre]))
+            [taoensso.timbre :as timbre]
+            [cheshire.generate :refer [add-encoder]])
+  (import [org.joda.time.format ISODateTimeFormat]
+          [org.joda.time DateTime ReadableInstant]
+          [com.fasterxml.jackson.core.json WriterBasedJsonGenerator]))
+
+(add-encoder DateTime
+             (fn [^DateTime dt ^WriterBasedJsonGenerator generator]
+               (.writeString generator (.print (ISODateTimeFormat/dateTime) ^ReadableInstant dt))))
 
 ;;; TODO
 ;;; - systems should receive their config as specified in external config file at the start of initialization

@@ -134,17 +134,21 @@
 (defn date-histogram
   [system idx mapping key-field value-field interval
    & {:keys [query filter time_zone factor pre_offset post_offset]
-      :or {query {:match_all {}}
-           size 10}
+      :or {query {:match_all {}}}
       :as opts}]
   (with-system-connection [sc system :elastic]
     (let [esr (esd/search idx mapping 
                           :query query
                           :search_type "count"
-                          :facets {:dh {:date_histogram (assoc (select-keys opts [:time_zone :factor :pre_offset :post_offset])
-                                                          :key_field key-field
-                                                          :value_field value-field
-                                                          :interval interval)}})]
-      (with-meta (get-in esr [:facets :dh :entries]) 
+                          :facets 
+                          (deep-merge {:dh {:date_histogram (assoc (select-keys opts [:time_zone :factor :pre_offset :post_offset])
+                                                              :key_field key-field
+                                                              :value_field value-field
+                                                              :interval interval)}}
+                                      (if filter
+                                        {:dh {:facet_filter filter}}
+                                        {})))]
+      (with-meta (map #(update-in % [key-field] tcoerce/from-long)
+                      (get-in esr [:facets :dh :entries])) 
         (dissoc (get-in esr [:facets :dh]) :entries)))))
 

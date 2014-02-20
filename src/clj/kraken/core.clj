@@ -30,6 +30,13 @@
 
 (start!)
 
+
+;; (meta (trades (system) :search_type "count"))
+;; {:max_score 0.0,
+;;  :total 1285,
+;;  :took 5,
+;;  :timed_out false,
+;;  :_shards {:total 1, :successful 1, :failed 0}}
 ;; (shutdown!)
 
 ;; ;; defroutes macro defines a function that chains individual route
