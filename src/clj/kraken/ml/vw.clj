@@ -1,10 +1,13 @@
 (ns kraken.ml.vw
   (:use [kraken.model]
         [kraken.system]
-        [kraken.elastic])
+        [kraken.elastic]
+        [kraken.ml.features])
   (:require [clj-time.core :as tcore]
             [clj-time.format :as tformat]
-            [clj-time.coerce :as tcoerce]))
+            [clj-time.coerce :as tcoerce]
+            [incanter.core :as inc]
+            [incanter.charts :as ich]))
 
 (defn vw-connection [host port]
   (let [socket (java.net.Socket. host port)
@@ -24,64 +27,83 @@
        (.close (:socket ~con))
        ~ret)))
 
-(defprotocol VWFormatP
-  (vwformat [this]))
-
-;;; VW features: see https://github.com/JohnLangford/vowpal_wabbit/wiki/Input-format. General format:
-;;; [Label] [Importance [Tag]]|Namespace Features |Namespace Features ... |Namespace Features
-
-;;; a feature has a name and optionally a value
-(defrecord Feature [name value]
-  VWFormatP
-  (vwformat [this] (str name (when value (str ":" value)))))
-(defn feature 
-  ([name] (feature name nil))
-  ([name value] (Feature. name value)))
-;; (defn map->feature [m]
-;;   (feature (:name m) (:value m)))
-
-;;; a feature set has a namesapce and a set of features
-(defrecord FeatureSet [namespace features]
-  VWFormatP 
-  (vwformat [this] (str (apply str (or namespace " ") (interpose " " (doall (map vwformat features)))) "\n")))
-(defn feature-set
-  ([features] (feature-set nil features))
-  ([namespace features] (FeatureSet. namespace features)))
-;; (defn map->feature-set [m]
-;;   (feature-set (:namespace m)
-;;                (map map->feature (:features m))))
-;;; A vw datum has a label, optionally an importance and a tag, and a set of named feature sets
-(defrecord Datum [label importance initial-prediction tag feature-sets]
-  VWFormatP
-  (vwformat [this] (apply str label
-                          " "
-                          (when importance 
-                            (str importance 
-                                 (when initial-prediction (str " " initial-prediction))
-                                 (when tag (str " '" tag))
-                                 " "))
-                          (interleave (repeat "|")
-                                      (map vwformat feature-sets)))))
-(defn datum
-  ([feature-sets] (datum nil nil nil nil feature-sets))
-  ([label feature-sets] (datum label nil nil nil feature-sets))  
-  ([label importance feature-sets] (datum label importance nil nil feature-sets))  
-  ([label importance initial-prediction tag feature-sets]
-     (Datum. label importance initial-prediction tag feature-sets)))
-;; (defn map->datum [m]
-;;   (datum (:label m)
-;;          (:importance m)
-;;          (:initial-prediction m)
-;;          (:tag m)
-;;          (map map->feature-set (:feature-sets m))))
-
 (defn train [vw-connection datum]
-  (.println (:out vw-connection) (vwformat datum))
+  (.println (:out vw-connection) datum)
   (.readLine (:in vw-connection)))
+
 
 (defn predict [vw-connection datum]
-  (.println (:out vw-connection) (vwformat (assoc datum :label nil)))
+  (.println (:out vw-connection) datum)
   (.readLine (:in vw-connection)))
+
+
+(def T (tcore/minutes 10))
+(def start-time (tcore/plus (:time (first (trades (system) :sort {:time {:order "asc"}}
+                                                  :size 1)))
+                            T))
+(def end-time (tcore/ago (tcore/hours 3)))
+
+(def time-points
+  (loop [times [start-time]]
+    (if (tcore/before? (last times) (tcore/now))
+      (recur (conj times (tcore/plus (last times) T)))
+      times)))
+
+(defn prediction [t T]
+  (with-vw-connection [c]
+    (predict c (vw-datum t T false))))
+
+
+(count time-points) ;; 252
+
+(count (filter #(tcore/after? end-time %) time-points)) ;; 239
+
+
+(def labels (map #(vw-label % T) time-points))
+
+(def features (map #(vw-features % T) time-points))
+
+(let [n (count (filter #(tcore/before? % end-time) time-points))]
+  (with-vw-connection [c]
+    (doseq [i (range (count (filter #(tcore/before? % end-time) time-points))) ]
+      (println (str i "/" n))
+      (train c (str (nth labels i) " | "(nth features i))))))
+
+
+(def predictions
+  (with-vw-connection [c]
+    (doall (for [i (range (count time-points))]
+             (do (println (str i "/" (count time-points)))
+                 (predict c (str  " | " (nth features i))))))))
+
+(let [times (filter #(tcore/before? % end-time) time-points)
+      n-train (count times)
+      ch (ich/scatter-plot (take n-train labels) 
+                           (map read-string (take n-train predictions))
+                           :x-label "Actual"
+                           :y-label "Prediction"
+                           :legend true
+                           :series-label "Training samples")]
+  (ich/add-points ch (drop n-train labels) 
+                  (map read-string (drop n-train predictions))
+                  :series-label "Predictions")
+  (inc/view ch))
+
+(let [n-train (count (filter #(tcore/before? % end-time) time-points))
+      time-points (map tcoerce/to-long time-points)
+      ch (ich/xy-plot time-points
+                           labels
+                           :x-label "Time"
+                           :y-label "Actual"
+                           :legend true
+                           :series-label "Training samples")]
+  (ich/add-lines ch (take n-train time-points) 
+                  (map read-string (take n-train predictions))
+                  :series-label "Trained predictions")
+  (ich/add-lines ch (drop n-train time-points) 
+                  (map read-string (drop n-train predictions))
+                  :series-label "Predictions")
+  (inc/view ch))
 
 
 

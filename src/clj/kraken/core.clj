@@ -13,6 +13,11 @@
             [kraken.channels :as ch]
             [clojure.core.async :as as]))
 
+;; TODO: 
+;; - start after stop and recompilation of cryptsy doesn't work
+;; - add test that cryptsy trade ids really are in descending order
+
+
 (defcomponent :app [:elastic :cryptsy]
   ComponentP 
   (initial-config [this] {})
@@ -30,14 +35,13 @@
 
 (start!)
 
+;(initialize!)
+
+;; (stop!)
+
 
 ;; (meta (trades (system) :search_type "count"))
-;; {:max_score 0.0,
-;;  :total 1285,
-;;  :took 5,
-;;  :timed_out false,
-;;  :_shards {:total 1, :successful 1, :failed 0}}
-;; (shutdown!)
+;; 17767
 
 ;; ;; defroutes macro defines a function that chains individual route
 ;; ;; functions together. The request map is passed to each function in

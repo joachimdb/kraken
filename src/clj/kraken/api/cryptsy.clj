@@ -44,20 +44,20 @@
    :info-time	Time at server when info was served (in UTC)
    :server-time-zone Time zone at server
    :open-order-count	Count of open orders on your account
-"
+" 
   [public-key private-key]
-  (let [ret (get (cryptsy-private "getinfo" public-key private-key) "return")]
+  (let [ret (get (cryptsy-private "getinfo" public-key private-key) "return")
+        available (into {} (remove #(= 0 (val %)) (get ret "balances_available")))]
     {:available (zipmap (keys (get ret "balances_available"))
-                        (map read-string (vals (get ret "balances_available"))))
+                        (map #(if (string? %) (read-string %) %) (vals (get ret "balances_available"))))
      :held (zipmap (keys (get ret "balances_hold"))
-                   (map read-string (vals (get ret "balances_hold"))))
+                   (map #(if (string? %) (read-string %) %) (vals (get ret "balances_hold"))))
      :open-order-count (get ret "openordercount")
      :info-time (tcoerce/from-long (* 1000 (get ret "servertimestamp")))
      :server-time-zone (get ret "servertimezone")
      ;; :time (tcore/from-time-zone (tformat/parse (get ret "serverdatetime"))
      ;;                             (tcore/time-zone-for-id (get ret "servertimezone")))
      }))
-;; (def info (get-info public-key private-key))
 
 (defn- get-markets 
   "Method: getmarkets 
@@ -341,7 +341,7 @@
                     (when (or (nil? @last-id)
                               (> id @last-id))
                       (reset! last-id id))))
-                (as/mapcat< identity
+                (as/mapcat< reverse ;; trades come in most recent first
                             (rec-channel (fn [_] (market-trades public-key private-key market-id exchange-time-zone))
                                          nil
                                          poll-interval
@@ -419,7 +419,7 @@
   (let [control-channel (as/chan)]
     {:control-channel control-channel
      :control (as/mult control-channel)}))
-
+;; (init-cryptsy (system) :cryptsy)
 (defn- init-cryptsy [system id]
   (let [public-key (get-cfg system id :public-key)
         private-key (get-cfg system id :private-key)
@@ -431,6 +431,18 @@
           (set-cfg id {:poll-interval poll-interval})
           (start-trade-channel! id "DOGE/BTC"))
       (throw (Exception. "Cannot initialize cryptsy: keys not specified in system")))))
+
+;; (def id :cryptsy)
+;; (def public-key (get-cfg (system) id :public-key))
+;; (def private-key (get-cfg (system) id :private-key))
+;; (def poll-interval (get-cfg (system) id :poll-interval))
+
+;; (def i (get-info public-key private-key))
+;; (def m (get-markets public-key private-key))
+;; (cryptsy-initial-config i m)
+
+;; (def ret (get (cryptsy-private "getinfo" public-key private-key) "return"))
+
 
 (defn- start-cryptsy [system id]
   (as/go (as/>! (get-cfg system id :control-channel) :start))
@@ -452,6 +464,8 @@
   (start [this system] (start-cryptsy system :cryptsy))
   (stop [this system] (stop-cryptsy system :cryptsy))
   (shutdown [this system] (shutdown-cryptsy system :cryptsy)))
+
+
 
 
 

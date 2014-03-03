@@ -34,10 +34,11 @@
 
 (defn trades [system 
               & {:keys [exchange-code market-code filter size search_type sort fields]
-                 :or {exchange-code "cryptsy" market-code "DOGE/BTC"}
+                 :or {exchange-code "cryptsy" market-code "DOGE/BTC" sort {:time {:order "desc"}}}
                  :as opts}]
   (let [hits (apply hits system (index-name system exchange-code) "trade"
                     :query {:term {:market-code market-code}}
+                    :sort sort
                     (flatten (seq (dissoc opts [:exchange-code :market-code]))))]
     (with-meta (map #(with-meta (mk-trade exchange-code 
                                           (:market-code %)

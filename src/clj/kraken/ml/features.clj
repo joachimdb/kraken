@@ -1,331 +1,137 @@
 (ns kraken.ml.features
   (:use [kraken.model]
         [kraken.system]
-        [kraken.view.charts])
+        [kraken.view.charts]
+        )
   (:require [incanter.core :as inc]
             [clj-time.core :as tcore]
             [clj-time.coerce :as tcoerce]
             [clj-time.format :as tformat]))
 
-(meta (trades (system) :search_type "count"))
-;; 1745
+;; TODO: 
+;; - use weighted averages to calculate price curve => use "total" field returned by cryptsy
+;; - think about higher order differentials
+;; - features from spread at different percentages of current price
 
-(inc/view (price-chart (price-curve (system) "1m")))
-(inc/view (price-chart (price-curve (system) "5m")))
+;;; 1) For different average intervals T and k:
+;;;
+;;;    (price(now) - price(now-k*T))/price(now)
 
-(def st (tcore/ago (tcore/hours 1))) ;; 9:49:54
-(def et (tcore/now)) ;; 10:49:55
+(defn differentiate-seq 
+  ([s] (differentiate-seq s 0.5))
+  ([s alpha]
+     (let [beta (- 1.0 alpha)]
+       (map #(/ (- %2 %1) (+ (* alpha %1) (* beta %2))) 
+            s (rest s)))))
+
+(defn- format-interval [I]
+  (str (tcore/in-seconds I) "s"))
+
+(defn relative-price-changes [system t T K]
+  (let [t-KT (reduce #(tcore/minus %1 %2) 
+                     t
+                     (repeat K T))
+        pc (price-curve system 
+                        (format-interval (tcore/interval (tcore/minus t T) t))
+                        :filter {:range {:time {:from t-KT :to t}}})
+        prices (map :mean pc)]
+    (map #(* 100.0 %)
+         (differentiate-seq prices))))
+
+(defn relative-logprice-changes [system t T K]
+  (map #(* % (Math/log (Math/abs %))) 
+       (relative-price-changes system t T K)))
+
+;;; NOW we need to determine the training label of a set of features. Ideally, it consists of a price (change) distribution over future price changes.
+
+(defn avg [c]
+  (when-not (empty? c)
+    (/ (reduce + c) (count c))))
+
+(defn dyn-avg [c alpha]
+  (when-not (empty? c)
+    (let [beta (- 1.0 alpha)]
+      (reduce #(+ (* beta %1) (* alpha %2)) c))))
+  
+(defn vw-label [t T]
+  ;; (price(t+T)-price(t))/price(t)
+  (let [cur-price (dyn-avg (map :price (trades (system) 
+                                               :filter {:range {:time {:from (tcore/minus t T) :to t}}}
+                                               :size 1000))
+                           0.6)
+        fut-price (dyn-avg (map :price (trades (system) 
+                                               :filter {:range {:time {:from t :to (tcore/plus t T)}}}
+                                               :size 1000))
+                           0.6)]
+    (when (and cur-price fut-price)
+      (/ (- cur-price fut-price) cur-price))))
+
+(defn- vw-format [features]
+  (mapcat (fn [[T prices]]
+            (map #(str "T" T "_" %1 ":" %2)
+                 (range)
+                 prices))
+          features))
+
+(defn vw-features [t T]
+  (clojure.string/join 
+           " "
+           (vw-format (for [Tf (concat (map #(tcore/minutes %) [1 2 5 10 20])
+                                       (map #(tcore/hours %) [1 2 6 12])
+                                       (map #(tcore/days %) [1 2 5])
+                                       (map #(tcore/weeks %) [1 2 3])
+                                       (map #(tcore/months %) [1 2 3 4 5 6 7 8 9 10 11]))]
+                        [(str Tf) (relative-price-changes (system) t Tf 10)]))))
+(defn vw-datum [t T]
+  (str (vw-label t T)
+       " | "
+       (clojure.string/join 
+        " "
+        (vw-features t T))))
+
+;; (def t kraken.ml.vw/gt)
+;; (vw-format (for [Tf (concat (map #(tcore/minutes %) [1 2 5 10 20])
+;;                             (map #(tcore/hours %) [1 2 6 12])
+;;                             (map #(tcore/days %) [1 2 5])
+;;                             (map #(tcore/weeks %) [1 2 3])
+;;                             (map #(tcore/months %) [1 2 3 4 5 6 7 8 9 10 11]))]
+;;              [(str Tf) (relative-price-changes (system) t Tf 10)]))
+;; (compute-label t T)
+;; (def t (tcore/now))
+;; (def T (tcore/minutes 5))     
+;; (vw-features t T true)
+;; (vw-features t T)
 
 
-(def pc1 (price-curve (system) "5m"
-                      :filter 
-                      {:range {:time {:from st :to et}}}))
+;; think from the perspective of the moment. At each moment, we can buy, sell, or do
+;; nothing. Whatever the decision, a new one needs to be made again every next time step.
 
-(meta (trades (system) :search_type "count" 
-              :filter {:range {:time {:from (:time (last pc1))}}}))
+;; we want to predict direction and size of change before the next time we can make a decision
 
-{:max_score 0.0,
- :total 1,
- :took 2,
- :timed_out false,
- :_shards {:total 1, :successful 1, :failed 0}}
+;; => labels -100, -80, .., 0, .. , 80, 100
 
-(take 2 (reverse pc1))
+;; => after learning we predict class probabilities and calculate the distribution DOGE/BTC that is most likely to generate the most benifit, e.g. the total value in DOGE
 
-({:time #<DateTime 2014-02-20T13:10:00.000Z>,
-  :count 2,
-  :min 2.1E-6,
-  :max 2.11E-6,
-  :total 4.21E-6,
-  :total_count 2,
-  :mean 2.105E-6}
- {:time #<DateTime 2014-02-20T13:05:00.000Z>,
-  :count 11,
-  :min 2.1E-6,
-  :max 2.11E-6,
-  :total 2.3120000000000002E-5,
-  :total_count 11,
-  :mean 2.101818181818182E-6})
+;; Only remaining problem is what time period to use for the predicion. Or is it? Maybe depends on
+;; the way decisions are made?
 
-(def pc2 (price-curve (system) "5m"
-                      :filter 
-                      {:range {:time {:from st 
-                                      :to et}}}))
+;; Assume that our current balance is [d,b], and the current price is p(k) (i.e. 1 d is p b). The total amount of d, D, is thus d+b/p. If the price at time k+1 is p(k+1), then the total amount of dodge we have after selling s dodge, 0<=s<=d, is  (d*p(k)+b)/p(k+1):
+
+;; 1) sell s at price p(k) => (d-s) + s*p(k)+b
+;; 2) buy d at price p(k+1) => (d-s) + (s*p(k)+b)/p(k+1)
+
+
+;; Thus, relative to the current D this is ...
+
+;; Conclusion: if p(k+1)<p(k+1) => sell, ...
+
+;; Now rephrase in terms of probabilities and expeced payoff
+
+;; P(k+1) => expected D(k+1) when selling s = ...
 
 
 
-(take 2 (reverse pc2))
-({:time #<DateTime 2014-02-20T11:00:00.000Z>,
-  :count 3,
-  :min 2.12E-6,
-  :max 2.14E-6,
-  :total 6.39E-6,
-  :total_count 3,
-  :mean 2.13E-6}
- {:time #<DateTime 2014-02-20T10:55:00.000Z>,
-  :count 13,
-  :min 2.13E-6,
-  :max 2.14E-6,
-  :total 2.7749999999999997E-5,
-  :total_count 13,
-  :mean 2.1346153846153844E-6})
 
-;;; => for training we should use the entry
+;;; 2) spread at different percentages of current price
 
-
-
-(inc/view (price-chart pc1))
-(inc/view (price-chart pc2))
-
-
-(inc/view (price-chart (price-curve (system) "5m"
-                                    :filter 
-                                    {:range {:time {:from (tcoerce/to-long (tcore/ago (tcore/hours 2)))
-                                                    :to (tcoerce/to-long n)}}})))
-
-
-;; A data point is characterized by features price, volume, momentum, accelaration, ...
-;; These can be computed at different resolutions (time scales)
-;; Furthermore, it's probably not really the price that is most informative, but the deviation from the value at the next time scale
-
-;; NOTE: must take care that the features for a point are computed as if they are the final point
-
-;; Thus we start with computing a price curve at two resolutions
-(def n (tcore/now))
-(def b (tcore/ago (tcore/days 1)))
-
-(def pc1 (rest (price-curve (system) "5m" :filter {:range {:time {:from (tcoerce/to-long b)
-                                                                  :to (tcoerce/to-long n)}}})))
-(def pc2 (rest (price-curve (system) "2m" :filter {:range {:time {:from (tcoerce/to-long b)
-                                                                  :to (tcoerce/to-long n)}}})))
-
-(meta (trades (system) :search_type "count"))
-{:max_score 0.0,
- :total 1125,
- :took 5,
- :timed_out false,
- :_shards {:total 1, :successful 1, :failed 0}}
-({:time 1392850500000,
-  :count 8,
-  :min 2.16E-6,
-  :max 2.16E-6,
-  :total 1.728E-5,
-  :total_count 8,
-  :mean 2.16E-6}
- {:time 1392850800000,
-  :count 12,
-  :min 2.15E-6,
-  :max 2.17E-6,
-  :total 2.591E-5,
-  :total_count 12,
-  :mean 2.1591666666666666E-6}
- {:time 1392851100000,
-  :count 13,
-  :min 2.15E-6,
-  :max 2.16E-6,
-  :total 2.8010000000000005E-5,
-  :total_count 13,
-  :mean 2.154615384615385E-6}
- {:time 1392851400000,
-  :count 10,
-  :min 2.16E-6,
-  :max 2.17E-6,
-  :total 2.162E-5,
-  :total_count 10,
-  :mean 2.162E-6}
- {:time 1392851700000,
-  :count 11,
-  :min 2.15E-6,
-  :max 2.17E-6,
-  :total 2.379E-5,
-  :total_count 11,
-  :mean 2.162727272727273E-6}
- {:time 1392852000000,
-  :count 10,
-  :min 2.15E-6,
-  :max 2.16E-6,
-  :total 2.154E-5,
-  :total_count 10,
-  :mean 2.154E-6}
- {:time 1392852300000,
-  :count 22,
-  :min 2.1E-6,
-  :max 2.16E-6,
-  :total 4.668999999999998E-5,
-  :total_count 22,
-  :mean 2.1222727272727262E-6}
- {:time 1392852600000,
-  :count 16,
-  :min 2.12E-6,
-  :max 2.14E-6,
-  :total 3.405000000000001E-5,
-  :total_count 16,
-  :mean 2.1281250000000005E-6}
- {:time 1392852900000,
-  :count 15,
-  :min 2.11E-6,
-  :max 2.13E-6,
-  :total 3.18E-5,
-  :total_count 15,
-  :mean 2.12E-6}
- {:time 1392853200000,
-  :count 15,
-  :min 2.13E-6,
-  :max 2.15E-6,
-  :total 3.2050000000000007E-5,
-  :total_count 15,
-  :mean 2.1366666666666672E-6}
- {:time 1392853500000,
-  :count 11,
-  :min 2.12E-6,
-  :max 2.14E-6,
-  :total 2.344E-5,
-  :total_count 11,
-  :mean 2.1309090909090908E-6}
- {:time 1392853800000,
-  :count 9,
-  :min 2.12E-6,
-  :max 2.14E-6,
-  :total 1.916E-5,
-  :total_count 9,
-  :mean 2.1288888888888886E-6}
- {:time 1392854100000,
-  :count 8,
-  :min 2.11E-6,
-  :max 2.13E-6,
-  :total 1.7E-5,
-  :total_count 8,
-  :mean 2.125E-6}
- {:time 1392854400000,
-  :count 8,
-  :min 2.12E-6,
-  :max 2.14E-6,
-  :total 1.7069999999999998E-5,
-  :total_count 8,
-  :mean 2.1337499999999997E-6}
- {:time 1392854700000,
-  :count 13,
-  :min 2.13E-6,
-  :max 2.14E-6,
-  :total 2.7749999999999997E-5,
-  :total_count 13,
-  :mean 2.1346153846153844E-6}
- {:time 1392855000000,
-  :count 14,
-  :min 2.1E-6,
-  :max 2.14E-6,
-  :total 2.9700000000000004E-5,
-  :total_count 14,
-  :mean 2.1214285714285717E-6}
- {:time 1392855300000,
-  :count 10,
-  :min 2.11E-6,
-  :max 2.12E-6,
-  :total 2.1129999999999996E-5,
-  :total_count 10,
-  :mean 2.1129999999999995E-6}
- {:time 1392855600000,
-  :count 10,
-  :min 2.11E-6,
-  :max 2.12E-6,
-  :total 2.116E-5,
-  :total_count 10,
-  :mean 2.116E-6}
- {:time 1392855900000,
-  :count 8,
-  :min 2.11E-6,
-  :max 2.12E-6,
-  :total 1.6930000000000002E-5,
-  :total_count 8,
-  :mean 2.1162500000000003E-6}
- {:time 1392856200000,
-  :count 12,
-  :min 2.11E-6,
-  :max 2.13E-6,
-  :total 2.544E-5,
-  :total_count 12,
-  :mean 2.12E-6}
- {:time 1392856500000,
-  :count 7,
-  :min 2.12E-6,
-  :max 2.14E-6,
-  :total 1.491E-5,
-  :total_count 7,
-  :mean 2.13E-6}
- {:time 1392856800000,
-  :count 10,
-  :min 2.12E-6,
-  :max 2.14E-6,
-  :total 2.1300000000000003E-5,
-  :total_count 10,
-  :mean 2.1300000000000004E-6}
- {:time 1392857100000,
-  :count 12,
-  :min 2.13E-6,
-  :max 2.16E-6,
-  :total 2.5760000000000004E-5,
-  :total_count 12,
-  :mean 2.146666666666667E-6}
- {:time 1392857400000,
-  :count 16,
-  :min 2.11E-6,
-  :max 2.16E-6,
-  :total 3.436E-5,
-  :total_count 16,
-  :mean 2.1475E-6}
- {:time 1392857700000,
-  :count 7,
-  :min 2.13E-6,
-  :max 2.15E-6,
-  :total 1.4989999999999999E-5,
-  :total_count 7,
-  :mean 2.141428571428571E-6}
- {:time 1392858000000,
-  :count 15,
-  :min 2.1E-6,
-  :max 2.13E-6,
-  :total 3.1750000000000006E-5,
-  :total_count 15,
-  :mean 2.116666666666667E-6}
- {:time 1392858300000,
-  :count 18,
-  :min 2.12E-6,
-  :max 2.13E-6,
-  :total 3.830000000000001E-5,
-  :total_count 18,
-  :mean 2.127777777777778E-6}
- {:time 1392858600000,
-  :count 17,
-  :min 2.12E-6,
-  :max 2.13E-6,
-  :total 3.616000000000001E-5,
-  :total_count 17,
-  :mean 2.1270588235294127E-6}
- {:time 1392858900000,
-  :count 16,
-  :min 2.11E-6,
-  :max 2.13E-6,
-  :total 3.398000000000001E-5,
-  :total_count 16,
-  :mean 2.1237500000000006E-6}
- {:time 1392859200000,
-  :count 10,
-  :min 2.11E-6,
-  :max 2.13E-6,
-  :total 2.1220000000000004E-5,
-  :total_count 10,
-  :mean 2.122E-6}
- {:time 1392859500000,
-  :count 13,
-  :min 2.11E-6,
-  :max 2.13E-6,
-  :total 2.7620000000000003E-5,
-  :total_count 13,
-  :mean 2.124615384615385E-6}
- {:time 1392859800000,
-  :count 8,
-  :min 2.12E-6,
-  :max 2.13E-6,
-  :total 1.6989999999999998E-5,
-  :total_count 8,
-  :mean 2.1237499999999998E-6})
+;;; => need spread channel
